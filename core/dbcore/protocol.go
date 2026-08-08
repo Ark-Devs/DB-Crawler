@@ -80,7 +80,7 @@ const (
 	CodeCancelled    = "cancelled"
 	CodeUnknownOp    = "unknown_op"
 	protocolVersion  = 1
-	coreVersionLabel = "db-crawler-core/0.0.6"
+	coreVersionLabel = "db-crawler-core/0.0.7"
 )
 
 // Handle decodes, dispatches, and encodes one request. It never returns an

@@ -15,6 +15,14 @@ class ResultsPanel extends StatelessWidget {
   final List<QueryResult> results;
   final String error;
 
+  /// True when at least one statement produced a grid.
+  ///
+  /// This is what decides whether the Results tab exists at all: an UPDATE has
+  /// no rows to show, and an empty grid beside "3 rows affected" invites the
+  /// reader to wonder which of the two is the real answer.
+  bool get _hasAnyRows =>
+      results.any((r) => r.hasRows && r.columns.isNotEmpty);
+
   @override
   Widget build(BuildContext context) {
     if (error.isNotEmpty) {
@@ -25,9 +33,43 @@ class ResultsPanel extends StatelessWidget {
         child: Text('Run a statement to see results here.'),
       );
     }
-    if (results.length == 1) {
-      return _SingleResult(result: results.first);
+
+    // Results and Messages are separate, the way SSMS separates them. A write
+    // reports only in Messages; a read gets a grid and still leaves its
+    // timings and warnings somewhere they do not crowd the data.
+    return DefaultTabController(
+      length: _hasAnyRows ? 2 : 1,
+      child: Column(
+        children: [
+          TabBar(
+            tabs: [
+              if (_hasAnyRows) const Tab(height: 38, text: 'Results'),
+              Tab(height: 38, text: 'Messages (${results.length})'),
+            ],
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                if (_hasAnyRows) _buildResults(context),
+                _MessagesPanel(results: results),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResults(BuildContext context) {
+    final withRows =
+        results.where((r) => r.hasRows && r.columns.isNotEmpty).toList();
+    if (withRows.length == 1) {
+      return _SingleResult(result: withRows.first);
     }
+    return _resultTabs(context, withRows);
+  }
+
+  Widget _resultTabs(BuildContext context, List<QueryResult> results) {
 
     // A batch produced several results. Tabs keep them all reachable rather
     // than showing only the last one, which is what hides the fact that
@@ -576,6 +618,80 @@ class _ErrorPanel extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+
+/// The Messages tab: what each statement did, in order.
+///
+/// This is where a write reports itself. "3 rows affected" is the entire
+/// answer to an UPDATE, and it deserves somewhere it is stated plainly rather
+/// than a caption under an empty grid.
+class _MessagesPanel extends StatelessWidget {
+  const _MessagesPanel({required this.results});
+
+  final List<QueryResult> results;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListView.separated(
+      padding: const EdgeInsets.all(12),
+      itemCount: results.length,
+      separatorBuilder: (_, __) => const Divider(height: 20),
+      itemBuilder: (context, i) {
+        final r = results[i];
+        final failed = r.failed;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  failed ? Icons.error_outline : Icons.check_circle_outline,
+                  size: 16,
+                  color: failed
+                      ? theme.colorScheme.error
+                      : theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Text('${i + 1}', style: theme.textTheme.labelSmall),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SelectableText(
+                    r.summary,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: failed ? theme.colorScheme.error : null,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (r.lastInsertId != null) ...[
+              const SizedBox(height: 4),
+              Padding(
+                padding: const EdgeInsets.only(left: 24),
+                child: Text('New id ${r.lastInsertId}',
+                    style: theme.textTheme.bodySmall),
+              ),
+            ],
+            const SizedBox(height: 6),
+            Padding(
+              padding: const EdgeInsets.only(left: 24),
+              child: SelectableText(
+                r.statement.replaceAll(RegExp(r'\s+'), ' '),
+                maxLines: 3,
+                style: monoFont.copyWith(
+                  fontSize: 11.5,
+                  color: theme.colorScheme.outline,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

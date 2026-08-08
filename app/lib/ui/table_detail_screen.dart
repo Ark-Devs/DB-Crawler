@@ -16,7 +16,7 @@ class TableDetailScreen extends StatefulWidget {
   });
 
   final TableInfo table;
-  final void Function(String sql) onOpenInEditor;
+  final void Function(String sql, {bool inNewTab}) onOpenInEditor;
 
   @override
   State<TableDetailScreen> createState() => _TableDetailScreenState();
@@ -54,6 +54,45 @@ class _TableDetailScreenState extends State<TableDetailScreen> {
     }
   }
 
+  /// Opens the routine's source in a new editor tab, ready to be altered.
+  ///
+  /// Editing happens in the SQL editor rather than in a bespoke form. That
+  /// gets it the read-only guard, the cancel button, the history, and the
+  /// Messages pane for free — and, more to the point, what is being changed
+  /// stays visible as SQL rather than hidden behind a widget that decides
+  /// what to run on your behalf.
+  void _editRoutine() {
+    final source = _routineSource;
+    if (source == null) return;
+    final engine = context.read<AppState>().active?.engine;
+    widget.onOpenInEditor(_asAlter(source, engine), inNewTab: true);
+    Navigator.of(context).pop();
+  }
+
+  /// Turns a stored definition into a statement that replaces it.
+  ///
+  /// SQL Server hands back the original CREATE, which fails against an object
+  /// that already exists; ALTER is the same text with one word changed.
+  /// PostgreSQL already returns CREATE OR REPLACE. MySQL returns only the
+  /// body, so it is left alone with a note — a correct rewrite there needs
+  /// DROP and CREATE, which is not something to generate silently.
+  static String _asAlter(String source, Engine? engine) {
+    final trimmed = source.trimLeft();
+    if (engine == Engine.mysql) {
+      return '-- MySQL returns only the routine body, not a runnable\n'
+          '-- definition. Changing it needs DROP then CREATE, written by hand.\n'
+          '$source';
+    }
+    final match = RegExp(r'^CREATE\s', caseSensitive: false).firstMatch(trimmed);
+    if (match == null) return source;
+    if (RegExp(r'^CREATE\s+OR\s+REPLACE\s', caseSensitive: false)
+        .hasMatch(trimmed)) {
+      return source;
+    }
+    return trimmed.replaceFirst(
+        RegExp(r'^CREATE\s', caseSensitive: false), 'ALTER ');
+  }
+
   /// Counts the rows exactly, only when asked.
   ///
   /// COUNT(*) on a large table is a full scan. Running it just to fill in a
@@ -88,6 +127,12 @@ class _TableDetailScreenState extends State<TableDetailScreen> {
       appBar: AppBar(
         title: Text(widget.table.name, style: monoFont.copyWith(fontSize: 16)),
         actions: [
+          if (_isRoutine)
+            IconButton(
+              tooltip: 'Edit',
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: _routineSource == null ? null : _editRoutine,
+            ),
           if (_isRoutine)
             IconButton(
               tooltip: 'Copy definition',

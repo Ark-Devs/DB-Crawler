@@ -28,9 +28,18 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
 
   /// Moves to the editor with a statement loaded, which is how the explorer
   /// hands a table over to be queried.
-  void _openInEditor(String sql) {
-    context.read<AppState>().setSql(sql);
-    EditorView.loadSql(sql);
+  ///
+  /// [inNewTab] is for work the user will keep — a routine they are about to
+  /// alter — so it does not overwrite whatever they were already writing.
+  void _openInEditor(String sql, {bool inNewTab = false}) {
+    final state = context.read<AppState>();
+    if (inNewTab) {
+      // The editor notices the tab changed and loads its text itself.
+      state.openTab(sql: sql);
+    } else {
+      state.setSql(sql);
+      EditorView.loadSql(sql);
+    }
     _tabs.animateTo(1);
   }
 
@@ -154,7 +163,7 @@ class _Disconnected extends StatelessWidget {
 class _ExplorerView extends StatefulWidget {
   const _ExplorerView({required this.onOpenInEditor});
 
-  final void Function(String sql) onOpenInEditor;
+  final void Function(String sql, {bool inNewTab}) onOpenInEditor;
 
   @override
   State<_ExplorerView> createState() => _ExplorerViewState();
@@ -188,6 +197,36 @@ class _ExplorerViewState extends State<_ExplorerView> {
 
     return Column(
       children: [
+        if (connection.databases.length > 1)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            child: DropdownButtonFormField<String>(
+              initialValue: connection.databases
+                      .contains(connection.profile.database)
+                  ? connection.profile.database
+                  : null,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Database'),
+              items: [
+                for (final name in connection.databases)
+                  DropdownMenuItem(value: name, child: Text(name)),
+              ],
+              onChanged: (value) async {
+                if (value == null) return;
+                final messenger = ScaffoldMessenger.of(context);
+                final state = context.read<AppState>();
+                // Switching reconnects, so it can fail the way any connect
+                // can — most often because the login has no access to the
+                // database that was picked.
+                if (!await state.switchDatabase(value)) {
+                  messenger.showSnackBar(SnackBar(
+                    content: Text(state.connectionError),
+                    behavior: SnackBarBehavior.floating,
+                  ));
+                }
+              },
+            ),
+          ),
         if (connection.engine.usesSchemas && connection.schemas.isNotEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
@@ -300,7 +339,11 @@ class _ExplorerViewState extends State<_ExplorerView> {
       itemBuilder: (context, index) {
         final table = tables[index];
         return ListTile(
-          leading: Icon(iconForTable(table), size: 20),
+          leading: IconButton(
+            tooltip: 'Structure',
+            icon: Icon(iconForTable(table), size: 20),
+            onPressed: () => _openDetail(table),
+          ),
           title: Text(table.name, style: monoFont.copyWith(fontSize: 14)),
           subtitle: _subtitleFor(table),
           trailing: table.isRoutine
@@ -314,16 +357,33 @@ class _ExplorerViewState extends State<_ExplorerView> {
                     widget.onOpenInEditor(sql.preview);
                   },
                 ),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => TableDetailScreen(
-                table: table,
-                onOpenInEditor: widget.onOpenInEditor,
-              ),
-            ),
-          ),
+          // Tapping a table shows its rows, which is what anyone opening a
+          // database client wants first. Structure is one more tap away, on
+          // the row's own icon.
+          onTap: () async {
+            if (table.isRoutine) {
+              _openDetail(table);
+              return;
+            }
+            final sql = await context
+                .read<AppState>()
+                .previewSql(table, limit: 200);
+            widget.onOpenInEditor(sql.preview);
+          },
+          onLongPress: () => _openDetail(table),
         );
       },
+    );
+  }
+
+  void _openDetail(TableInfo table) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TableDetailScreen(
+          table: table,
+          onOpenInEditor: widget.onOpenInEditor,
+        ),
+      ),
     );
   }
 

@@ -61,8 +61,24 @@ class _EditorViewState extends State<EditorView> {
       context.read<AppState>().setSql(sql);
       if (mounted) setState(() {});
     };
+    _shownTabId = context.read<AppState>().tab.id;
     final existing = context.read<AppState>().sql;
     if (existing.isNotEmpty) _controller.text = existing;
+  }
+
+  /// Which tab's text the controller currently holds. Switching tabs has to
+  /// swap the buffer, and there is no notification for "the tab changed" other
+  /// than noticing it during a rebuild.
+  String _shownTabId = '';
+
+  void _syncTab(AppState state) {
+    if (state.tab.id == _shownTabId) return;
+    _shownTabId = state.tab.id;
+    _controller.value = TextEditingValue(
+      text: state.tab.sql,
+      selection: TextSelection.collapsed(offset: state.tab.sql.length),
+    );
+    _suggestions = const [];
   }
 
   /// Recomputes suggestions a beat after typing stops.
@@ -123,9 +139,11 @@ class _EditorViewState extends State<EditorView> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+    _syncTab(state);
 
     return Column(
       children: [
+        _TabStrip(state: state),
         _EditorField(
           controller: _controller,
           focus: _focus,
@@ -139,7 +157,6 @@ class _EditorViewState extends State<EditorView> {
         _Toolbar(
           canRun: _controller.text.trim().isNotEmpty && !state.running,
           running: state.running,
-          rowLimit: state.rowLimit,
           hasSelection: _hasSelection,
           onRun: () {
             // A selection means "run exactly this". Highlighting one statement
@@ -150,7 +167,6 @@ class _EditorViewState extends State<EditorView> {
             state.run(statement: selected.isEmpty ? null : selected);
           },
           onCancel: state.cancel,
-          onRowLimitChanged: (value) => state.rowLimit = value,
           onFormat: () {
             final formatted = _tidy(_controller.text);
             _controller.text = formatted;
@@ -248,21 +264,17 @@ class _Toolbar extends StatelessWidget {
   const _Toolbar({
     required this.canRun,
     required this.running,
-    required this.rowLimit,
     required this.hasSelection,
     required this.onRun,
     required this.onCancel,
-    required this.onRowLimitChanged,
     required this.onFormat,
   });
 
   final bool canRun;
   final bool running;
-  final int rowLimit;
   final bool hasSelection;
   final VoidCallback onRun;
   final VoidCallback onCancel;
-  final ValueChanged<int> onRowLimitChanged;
   final VoidCallback onFormat;
 
   @override
@@ -299,22 +311,6 @@ class _Toolbar extends StatelessWidget {
             onPressed: onFormat,
           ),
           const Spacer(),
-          Text('Limit', style: Theme.of(context).textTheme.labelSmall),
-          const SizedBox(width: 6),
-          DropdownButton<int>(
-            value: rowLimit,
-            underline: const SizedBox.shrink(),
-            isDense: true,
-            items: const [
-              DropdownMenuItem(value: 100, child: Text('100')),
-              DropdownMenuItem(value: 500, child: Text('500')),
-              DropdownMenuItem(value: 2000, child: Text('2000')),
-              DropdownMenuItem(value: 10000, child: Text('10000')),
-            ],
-            onChanged: (value) {
-              if (value != null) onRowLimitChanged(value);
-            },
-          ),
         ],
       ),
     );
@@ -390,6 +386,93 @@ class _SuggestionBar extends StatelessWidget {
             onPressed: () => onPick(s),
           );
         },
+      ),
+    );
+  }
+}
+
+
+/// The row of editor tabs.
+///
+/// Several buffers matter on a phone more than on a desktop: there is no
+/// second window to keep a reference query in, so without tabs you overwrite
+/// the thing you were about to need.
+class _TabStrip extends StatelessWidget {
+  const _TabStrip({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      height: 42,
+      color: theme.colorScheme.surfaceContainerLow,
+      child: Row(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: state.tabs.length,
+              itemBuilder: (context, i) {
+                final tab = state.tabs[i];
+                final active = i == state.activeTabIndex;
+                return InkWell(
+                  onTap: () => state.selectTab(i),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      border: Border(
+                        bottom: BorderSide(
+                          width: 2,
+                          color: active
+                              ? theme.colorScheme.primary
+                              : Colors.transparent,
+                        ),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        if (tab.running)
+                          const Padding(
+                            padding: EdgeInsets.only(right: 6),
+                            child: SizedBox(
+                              width: 11,
+                              height: 11,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 1.6),
+                            ),
+                          ),
+                        Text(
+                          tab.title,
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: active
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        if (state.tabs.length > 1)
+                          IconButton(
+                            iconSize: 14,
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.only(left: 4),
+                            constraints: const BoxConstraints(),
+                            icon: const Icon(Icons.close),
+                            onPressed: () => state.closeTab(tab.id),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          IconButton(
+            tooltip: 'New tab',
+            icon: const Icon(Icons.add, size: 20),
+            onPressed: () => state.openTab(),
+          ),
+        ],
       ),
     );
   }

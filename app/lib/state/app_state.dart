@@ -18,6 +18,7 @@ class ActiveConnection {
   final String sessionId;
   final ConnectionProfile profile;
 
+  List<String> databases = const [];
   List<String> schemas = const [];
   String? selectedSchema;
   List<TableInfo> tables = const [];
@@ -25,6 +26,22 @@ class ActiveConnection {
   String tablesError = '';
 
   Engine get engine => profile.engine;
+}
+
+/// One editor tab: its text, and the results it produced.
+///
+/// Results belong to the tab that ran them rather than to the app, so a slow
+/// query in one tab cannot overwrite what another tab is showing.
+class EditorTab {
+  EditorTab({required this.id, required this.title});
+
+  final String id;
+  String title;
+  String sql = '';
+  List<QueryResult> results = const [];
+  bool running = false;
+  String? runningOpId;
+  String runError = '';
 }
 
 /// The single source of truth the whole app reads from.
@@ -70,31 +87,69 @@ class AppState extends ChangeNotifier {
 
   // --- editor -------------------------------------------------------------
 
-  String _sql = '';
-  String get sql => _sql;
+  final List<EditorTab> _tabs = [EditorTab(id: 'tab-1', title: 'Query 1')];
+  int _activeTab = 0;
+  int _tabSeq = 1;
 
-  List<QueryResult> _results = const [];
-  List<QueryResult> get results => _results;
+  List<EditorTab> get tabs => List.unmodifiable(_tabs);
+  int get activeTabIndex => _activeTab;
 
-  bool _running = false;
-  bool get running => _running;
+  /// The tab the user is looking at. Never null — closing the last tab opens
+  /// a fresh one rather than leaving the editor with nothing to type into.
+  EditorTab get tab => _tabs[_activeTab];
 
-  String? _runningOpId;
+  String get sql => tab.sql;
+  List<QueryResult> get results => tab.results;
+  bool get running => tab.running;
+  String get runError => tab.runError;
 
-  String _runError = '';
-  String get runError => _runError;
-
-  int _rowLimit = 500;
+  /// How many rows a query brings back.
+  ///
+  /// No longer a control in the toolbar — it was a knob nobody wanted to
+  /// think about before running a query. It is still a cap, because a phone
+  /// cannot hold a million rows and an unbounded SELECT over mobile data is
+  /// how you lose a data plan by accident. When it bites, the grid says so
+  /// rather than quietly showing part of the answer.
+  static const int _rowLimit = 1000;
   int get rowLimit => _rowLimit;
-  set rowLimit(int value) {
-    _rowLimit = value;
+
+  void setSql(String value) {
+    tab.sql = value;
+    // Deliberately silent: the editor's own controller already holds the text,
+    // and rebuilding the whole tree on every keystroke would make typing lag.
+  }
+
+  void selectTab(int index) {
+    if (index < 0 || index >= _tabs.length || index == _activeTab) return;
+    _activeTab = index;
     notifyListeners();
   }
 
-  void setSql(String value) {
-    _sql = value;
-    // Deliberately silent: the editor's own controller already holds the text,
-    // and rebuilding the whole tree on every keystroke would make typing lag.
+  /// Opens a tab, optionally pre-filled. Returns its index.
+  int openTab({String? sql, String? title}) {
+    _tabSeq++;
+    final created = EditorTab(
+      id: 'tab-$_tabSeq',
+      title: title ?? 'Query $_tabSeq',
+    );
+    if (sql != null) created.sql = sql;
+    _tabs.add(created);
+    _activeTab = _tabs.length - 1;
+    notifyListeners();
+    return _activeTab;
+  }
+
+  void closeTab(String id) {
+    final index = _tabs.indexWhere((t) => t.id == id);
+    if (index < 0) return;
+    _tabs.removeAt(index);
+    if (_tabs.isEmpty) {
+      // An editor with no tabs has nowhere to type; replace rather than empty.
+      _tabSeq++;
+      _tabs.add(EditorTab(id: 'tab-$_tabSeq', title: 'Query $_tabSeq'));
+    }
+    _activeTab = _activeTab.clamp(0, _tabs.length - 1);
+    notifyListeners();
   }
 
   // --- lifecycle ----------------------------------------------------------
@@ -143,6 +198,7 @@ class AppState extends ChangeNotifier {
       _connecting = false;
       notifyListeners();
 
+      await refreshDatabases();
       await refreshSchemas();
       return true;
     } on CoreException catch (error) {
@@ -201,8 +257,15 @@ class AppState extends ChangeNotifier {
     final current = _active;
     if (current == null) return;
     _active = null;
-    _results = const [];
-    _runError = '';
+    // Clear results everywhere, not just the visible tab: they describe a
+    // connection that no longer exists. The SQL is left alone — that is the
+    // user's work, and switching database should not cost them their query.
+    for (final t in _tabs) {
+      t.results = const [];
+      t.runError = '';
+      t.running = false;
+      t.runningOpId = null;
+    }
     notifyListeners();
     try {
       await _client.call({
@@ -212,6 +275,40 @@ class AppState extends ChangeNotifier {
     } on CoreException {
       // The session may already be gone, which is exactly what disconnecting
       // was meant to achieve.
+    }
+  }
+
+  /// Moves the open connection to another database.
+  ///
+  /// Done by reconnecting rather than by issuing USE, because PostgreSQL
+  /// cannot change database on a live connection at all and doing it one way
+  /// on some engines and another way elsewhere is how the catalog cache ends
+  /// up describing a database you are no longer in.
+  ///
+  /// The change is not written back to the saved connection: looking at
+  /// another database is not a decision to change where this profile points.
+  Future<bool> switchDatabase(String name) async {
+    final connection = _active;
+    if (connection == null) return false;
+    if (connection.profile.database == name) return true;
+    return connect(connection.profile.copyWith(database: name));
+  }
+
+  Future<void> refreshDatabases() async {
+    final connection = _active;
+    if (connection == null) return;
+    try {
+      final data = await _client.call({
+        'op': 'databases',
+        'sessionId': connection.sessionId,
+      });
+      connection.databases = ((data['databases'] as List<dynamic>?) ?? const [])
+          .map((d) => '$d')
+          .toList();
+      notifyListeners();
+    } on CoreException {
+      // A login that cannot enumerate databases can still use the one it is
+      // in; the picker simply does not appear.
     }
   }
 
@@ -299,7 +396,10 @@ class AppState extends ChangeNotifier {
 
   /// Asks the core for the SELECT it would run for this table, so the SQL the
   /// user sees is exactly the SQL that runs — quoting rules included.
-  Future<({String preview, String count})> previewSql(TableInfo table) async {
+  Future<({String preview, String count})> previewSql(
+    TableInfo table, {
+    int? limit,
+  }) async {
     final connection = _active;
     if (connection == null) {
       throw CoreException('no_session', 'Not connected.');
@@ -309,7 +409,10 @@ class AppState extends ChangeNotifier {
       'sessionId': connection.sessionId,
       'schema': table.schema,
       'table': table.name,
-      'limit': _rowLimit,
+      // Tapping a table opens a deliberately small window on it — 200 rows,
+      // the way SSMS does — rather than the editor's row cap, which the user
+      // set for queries they wrote themselves.
+      'limit': limit ?? _rowLimit,
     });
     return (
       preview: data['preview'] as String? ?? '',
@@ -367,22 +470,27 @@ class AppState extends ChangeNotifier {
 
   // --- running SQL --------------------------------------------------------
 
-  /// Runs [statement], or the editor's contents when it is null.
+  /// Runs [statement], or the active tab's contents when it is null.
   Future<void> run({String? statement}) async {
     final connection = _active;
+    final target = tab;
     if (connection == null) {
-      _runError = 'Not connected.';
+      target.runError = 'Not connected.';
       notifyListeners();
       return;
     }
-    final text = (statement ?? _sql).trim();
+    final text = (statement ?? target.sql).trim();
     if (text.isEmpty) return;
 
-    final opId = 'op-${DateTime.now().microsecondsSinceEpoch}-${Random().nextInt(9999)}';
-    _running = true;
-    _runningOpId = opId;
-    _runError = '';
-    _results = const [];
+    final opId =
+        'op-${DateTime.now().microsecondsSinceEpoch}-${Random().nextInt(9999)}';
+    // The tab is captured rather than read again later: switching tabs while
+    // a query is in flight must not land the results on whichever tab happens
+    // to be in front when the answer arrives.
+    target.running = true;
+    target.runningOpId = opId;
+    target.runError = '';
+    target.results = const [];
     notifyListeners();
 
     final started = DateTime.now();
@@ -395,21 +503,22 @@ class AppState extends ChangeNotifier {
         'maxRows': _rowLimit,
         'stopOnError': true,
       });
-      _results = ((data['results'] as List<dynamic>?) ?? const [])
+      target.results = ((data['results'] as List<dynamic>?) ?? const [])
           .map((r) => QueryResult.fromJson(r as Map<String, dynamic>))
           .toList();
 
-      final failed = _results.any((r) => r.failed);
+      final failed = target.results.any((r) => r.failed);
       await _history.add(HistoryEntry(
         sql: text,
         connectionName: connection.profile.name,
         ranAt: started,
         succeeded: !failed,
         elapsedMs: DateTime.now().difference(started).inMilliseconds,
-        rowCount: _results.isEmpty ? null : _results.last.rows.length,
+        rowCount:
+            target.results.isEmpty ? null : target.results.last.rows.length,
       ));
     } on CoreException catch (error) {
-      _runError = error.message;
+      target.runError = error.message;
       if (error.isSessionLost) {
         // The socket died while the app was backgrounded. Dropping the stale
         // session here is what lets the UI offer "reconnect" instead of
@@ -425,14 +534,14 @@ class AppState extends ChangeNotifier {
       ));
     }
 
-    _running = false;
-    _runningOpId = null;
+    target.running = false;
+    target.runningOpId = null;
     notifyListeners();
   }
 
   Future<void> cancel() async {
     final connection = _active;
-    final opId = _runningOpId;
+    final opId = tab.runningOpId;
     if (connection == null || opId == null) return;
     try {
       await _client.call({
