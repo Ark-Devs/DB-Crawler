@@ -22,10 +22,16 @@ android {
     defaultConfig {
         applicationId = "com.arkdevs.db_crawler"
 
-        // 23 rather than Flutter's default: flutter_secure_storage stores the
-        // database passwords in EncryptedSharedPreferences, which is where
-        // Android's keystore-backed encryption starts.
-        minSdk = 23
+        // Left as Flutter's own floor, which is currently 24 — comfortably
+        // above the 23 that flutter_secure_storage needs for its
+        // keystore-backed EncryptedSharedPreferences.
+        //
+        // Pinning a literal below Flutter's floor is not merely ignored: the
+        // tool's MinSdkVersionMigration rewrites the line during `flutter
+        // build`, and it writes Groovy (`minSdkVersion flutter.minSdkVersion`)
+        // into this Kotlin file, which then fails to compile. Hardcoding 23
+        // here cost one red build to discover.
+        minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

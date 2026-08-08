@@ -12,8 +12,10 @@ core/build/
 *.so
 *.a
 *.dylib
-*.h
-!core/**/*.h
+# No blanket *.h here. The cgo-generated headers live inside the build
+# directories already ignored above, and a catch-all also swallows
+# ios/Runner/Runner-Bridging-Header.h — a real source file Xcode needs, whose
+# absence fails the build with a confusing "build input file cannot be found".
 
 # Flutter / Dart
 app/.dart_tool/
