@@ -1,0 +1,44 @@
+# Never commit a connection profile or anything that could hold a credential.
+*.dbcrawler-profiles
+secrets.json
+.env
+.env.*
+!.env.example
+
+# Built native cores
+app/android/app/src/main/jniLibs/
+app/ios/Frameworks/
+core/build/
+*.so
+*.a
+*.dylib
+*.h
+!core/**/*.h
+
+# Flutter / Dart
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/build/
+app/ios/Pods/
+app/ios/.symlinks/
+app/ios/Flutter/Flutter.framework
+app/ios/Flutter/Flutter.podspec
+app/ios/Flutter/ephemeral/
+app/android/.gradle/
+app/android/local.properties
+app/android/key.properties
+*.jks
+*.keystore
+app/**/GeneratedPluginRegistrant.*
+app/.packages
+pubspec.lock
+
+# Go
+core/vendor/
+
+# Editors and OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
