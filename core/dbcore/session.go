@@ -37,6 +37,13 @@ type Session struct {
 
 	mu      sync.Mutex
 	running map[string]context.CancelFunc
+
+	// Names for editor completion, filled lazily. Cached on the session
+	// because a catalog does not change often and a keystroke cannot wait for
+	// a round trip.
+	catalog      catalog
+	schemaOnce   sync.Once
+	cachedSchema string
 }
 
 // Manager owns every open session. One instance lives for the lifetime of the

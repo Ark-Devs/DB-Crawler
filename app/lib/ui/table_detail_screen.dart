@@ -24,9 +24,12 @@ class TableDetailScreen extends StatefulWidget {
 
 class _TableDetailScreenState extends State<TableDetailScreen> {
   TableDetail? _detail;
+  String? _routineSource;
   String _error = '';
   String? _exactCount;
   bool _counting = false;
+
+  bool get _isRoutine => widget.table.isRoutine;
 
   @override
   void initState() {
@@ -35,8 +38,16 @@ class _TableDetailScreenState extends State<TableDetailScreen> {
   }
 
   Future<void> _load() async {
+    final state = context.read<AppState>();
     try {
-      final detail = await context.read<AppState>().tableDetail(widget.table);
+      // A routine is code, not storage: it has a definition to read rather
+      // than columns to browse, and asking for columns would simply fail.
+      if (_isRoutine) {
+        final source = await state.routineDefinition(widget.table);
+        if (mounted) setState(() => _routineSource = source);
+        return;
+      }
+      final detail = await state.tableDetail(widget.table);
       if (mounted) setState(() => _detail = detail);
     } on CoreException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -77,6 +88,24 @@ class _TableDetailScreenState extends State<TableDetailScreen> {
       appBar: AppBar(
         title: Text(widget.table.name, style: monoFont.copyWith(fontSize: 16)),
         actions: [
+          if (_isRoutine)
+            IconButton(
+              tooltip: 'Copy definition',
+              icon: const Icon(Icons.copy),
+              onPressed: _routineSource == null
+                  ? null
+                  : () {
+                      Clipboard.setData(
+                          ClipboardData(text: _routineSource!));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Copied'),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    },
+            )
+          else
           IconButton(
             tooltip: 'Query this table',
             icon: const Icon(Icons.play_arrow),
@@ -97,6 +126,8 @@ class _TableDetailScreenState extends State<TableDetailScreen> {
               child: SelectableText(error, textAlign: TextAlign.center),
             ),
           ),
+        _ when _isRoutine && _routineSource != null =>
+          _RoutineSource(source: _routineSource!, kind: widget.table.type),
         (null, _) => const Center(child: CircularProgressIndicator()),
         (final d?, _) => _Body(
             detail: d,
@@ -350,6 +381,49 @@ class _Section extends StatelessWidget {
           ),
         ),
         ...children,
+      ],
+    );
+  }
+}
+
+
+/// The stored source of a function or procedure.
+///
+/// Unlike the CREATE TABLE the table screen reconstructs from catalog
+/// metadata, this is the real text the server holds, so it can be trusted and
+/// copied.
+class _RoutineSource extends StatelessWidget {
+  const _RoutineSource({required this.source, required this.kind});
+
+  final String source;
+  final String kind;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text(
+          kind.toUpperCase(),
+          style: theme.textTheme.labelSmall?.copyWith(
+            letterSpacing: 1.1,
+            color: theme.colorScheme.outline,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: SelectableText(
+            source,
+            style: monoFont.copyWith(fontSize: 12),
+          ),
+        ),
       ],
     );
   }

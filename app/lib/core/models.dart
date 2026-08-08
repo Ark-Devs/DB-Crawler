@@ -441,6 +441,38 @@ class QueryResult {
   }
 }
 
+/// One completion offered for the word being typed.
+class Suggestion {
+  const Suggestion({required this.text, required this.kind, this.detail = ''});
+
+  final String text;
+
+  /// "keyword", "table", "view", "column", "function", "procedure".
+  final String kind;
+
+  /// Grey text beside it — a column's type, a table's schema.
+  final String detail;
+
+  factory Suggestion.fromJson(Map<String, dynamic> json) => Suggestion(
+        text: json['text'] as String? ?? '',
+        kind: json['kind'] as String? ?? 'keyword',
+        detail: json['detail'] as String? ?? '',
+      );
+}
+
+/// The object kinds the explorer groups by. Kept as plain strings because the
+/// core is the authority — a kind it learns about later should show up rather
+/// than be swallowed by an enum that has not heard of it.
+class ObjectKind {
+  static const table = 'table';
+  static const view = 'view';
+  static const materializedView = 'materialized view';
+  static const function = 'function';
+  static const procedure = 'procedure';
+
+  static bool isRoutine(String kind) => kind == function || kind == procedure;
+}
+
 class TableInfo {
   const TableInfo({
     required this.name,
@@ -457,6 +489,7 @@ class TableInfo {
   final String comment;
 
   bool get isView => type.contains('view');
+  bool get isRoutine => ObjectKind.isRoutine(type);
   String get qualified => schema.isEmpty ? name : '$schema.$name';
 
   factory TableInfo.fromJson(Map<String, dynamic> json) => TableInfo(

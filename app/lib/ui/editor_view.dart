@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/models.dart';
 import '../state/app_state.dart';
 import 'results_grid.dart';
 import 'theme.dart';
@@ -28,9 +31,29 @@ class _EditorViewState extends State<EditorView> {
   final _controller = TextEditingController();
   final _focus = FocusNode();
 
+  Timer? _completionDebounce;
+  String _completionPrefix = '';
+  List<Suggestion> _suggestions = const [];
+
+  /// True when the user has highlighted part of the buffer, which changes what
+  /// the run button does.
+  bool get _hasSelection {
+    final sel = _controller.selection;
+    return sel.isValid && !sel.isCollapsed;
+  }
+
+  String get _selectedText {
+    final sel = _controller.selection;
+    if (!_hasSelection) return '';
+    return sel.textInside(_controller.text);
+  }
+
   @override
   void initState() {
     super.initState();
+    // The run button and the suggestion bar both depend on where the cursor
+    // is, and moving the caret fires no onChanged.
+    _controller.addListener(_onEditorChanged);
     EditorView._loader = (sql) {
       _controller.text = sql;
       _controller.selection =
@@ -42,9 +65,56 @@ class _EditorViewState extends State<EditorView> {
     if (existing.isNotEmpty) _controller.text = existing;
   }
 
+  /// Recomputes suggestions a beat after typing stops.
+  ///
+  /// Completion is a round trip through the core and, on a first use, a
+  /// catalog query. Firing on every keystroke would put that on the critical
+  /// path of typing; a short pause is imperceptible and costs one call
+  /// instead of thirty.
+  void _onEditorChanged() {
+    if (mounted) setState(() {});
+    _completionDebounce?.cancel();
+    _completionDebounce = Timer(const Duration(milliseconds: 180), () async {
+      final selection = _controller.selection;
+      if (!selection.isValid || !selection.isCollapsed || !_focus.hasFocus) {
+        if (mounted) setState(() => _suggestions = const []);
+        return;
+      }
+      final result = await context
+          .read<AppState>()
+          .complete(_controller.text, selection.baseOffset);
+      if (!mounted) return;
+      setState(() {
+        _completionPrefix = result.prefix;
+        _suggestions = result.suggestions;
+      });
+    });
+  }
+
+  /// Replaces the partial word under the cursor with the chosen suggestion.
+  void _applySuggestion(Suggestion suggestion) {
+    final selection = _controller.selection;
+    if (!selection.isValid) return;
+    final cursor = selection.baseOffset;
+    final start = cursor - _completionPrefix.length;
+    if (start < 0) return;
+
+    final text = _controller.text;
+    final replaced = text.replaceRange(start, cursor, suggestion.text);
+    _controller.value = TextEditingValue(
+      text: replaced,
+      selection:
+          TextSelection.collapsed(offset: start + suggestion.text.length),
+    );
+    context.read<AppState>().setSql(replaced);
+    setState(() => _suggestions = const []);
+  }
+
   @override
   void dispose() {
     EditorView._loader = null;
+    _completionDebounce?.cancel();
+    _controller.removeListener(_onEditorChanged);
     _controller.dispose();
     _focus.dispose();
     super.dispose();
@@ -59,18 +129,25 @@ class _EditorViewState extends State<EditorView> {
         _EditorField(
           controller: _controller,
           focus: _focus,
-          onChanged: (value) {
-            state.setSql(value);
-            setState(() {}); // keeps the run button's enabled state honest
-          },
+          onChanged: state.setSql,
         ),
+        if (_suggestions.isNotEmpty)
+          _SuggestionBar(
+            suggestions: _suggestions,
+            onPick: _applySuggestion,
+          ),
         _Toolbar(
           canRun: _controller.text.trim().isNotEmpty && !state.running,
           running: state.running,
           rowLimit: state.rowLimit,
+          hasSelection: _hasSelection,
           onRun: () {
+            // A selection means "run exactly this". Highlighting one statement
+            // out of a script and running the lot instead is the kind of
+            // mistake that is only noticed afterwards.
+            final selected = _selectedText.trim();
             _focus.unfocus();
-            state.run();
+            state.run(statement: selected.isEmpty ? null : selected);
           },
           onCancel: state.cancel,
           onRowLimitChanged: (value) => state.rowLimit = value,
@@ -172,6 +249,7 @@ class _Toolbar extends StatelessWidget {
     required this.canRun,
     required this.running,
     required this.rowLimit,
+    required this.hasSelection,
     required this.onRun,
     required this.onCancel,
     required this.onRowLimitChanged,
@@ -181,6 +259,7 @@ class _Toolbar extends StatelessWidget {
   final bool canRun;
   final bool running;
   final int rowLimit;
+  final bool hasSelection;
   final VoidCallback onRun;
   final VoidCallback onCancel;
   final ValueChanged<int> onRowLimitChanged;
@@ -205,7 +284,7 @@ class _Toolbar extends StatelessWidget {
             FilledButton.icon(
               onPressed: canRun ? onRun : null,
               icon: const Icon(Icons.play_arrow, size: 18),
-              label: const Text('Run'),
+              label: Text(hasSelection ? 'Run selection' : 'Run'),
               style: tag == null
                   ? null
                   // Tinting the run button with the connection's colour is the
@@ -264,6 +343,53 @@ class _RunningIndicator extends StatelessWidget {
             style: TextStyle(fontSize: 12),
           ),
         ],
+      ),
+    );
+  }
+}
+
+
+/// Suggestions, as a horizontal strip directly above the toolbar.
+///
+/// A dropdown overlay is the desktop answer and the wrong one here: it would
+/// cover the very text being edited on a screen where the keyboard already
+/// takes half the height. A strip stays out of the way and is reachable with
+/// the thumb already on the screen.
+class _SuggestionBar extends StatelessWidget {
+  const _SuggestionBar({required this.suggestions, required this.onPick});
+
+  final List<Suggestion> suggestions;
+  final void Function(Suggestion) onPick;
+
+  static IconData _icon(String kind) => switch (kind) {
+        'column' => Icons.view_column_outlined,
+        'table' => Icons.table_chart_outlined,
+        'view' => Icons.visibility_outlined,
+        'function' || 'procedure' => Icons.functions,
+        _ => Icons.abc,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      height: 42,
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        itemCount: suggestions.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 6),
+        itemBuilder: (context, i) {
+          final s = suggestions[i];
+          return ActionChip(
+            visualDensity: VisualDensity.compact,
+            avatar: Icon(_icon(s.kind), size: 14),
+            label: Text(s.text, style: monoFont.copyWith(fontSize: 12.5)),
+            tooltip: s.detail.isEmpty ? null : '${s.text} · ${s.detail}',
+            onPressed: () => onPick(s),
+          );
+        },
       ),
     );
   }

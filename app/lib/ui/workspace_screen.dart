@@ -163,6 +163,10 @@ class _ExplorerView extends StatefulWidget {
 class _ExplorerViewState extends State<_ExplorerView> {
   String _filter = '';
 
+  /// Empty means every kind. SSMS separates these into folders; on a phone a
+  /// row of chips does the same job without a tree to expand.
+  String _kind = '';
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
@@ -170,11 +174,17 @@ class _ExplorerViewState extends State<_ExplorerView> {
     if (connection == null) return const SizedBox.shrink();
 
     final needle = _filter.trim().toLowerCase();
-    final tables = needle.isEmpty
-        ? connection.tables
-        : connection.tables
-            .where((t) => t.name.toLowerCase().contains(needle))
-            .toList();
+    final tables = connection.tables.where((t) {
+      if (_kind.isNotEmpty && t.type != _kind) return false;
+      return needle.isEmpty || t.name.toLowerCase().contains(needle);
+    }).toList();
+
+    // Only offer a chip for a kind that is actually present. A Procedures
+    // filter on SQLite, which has none, is a dead control.
+    final counts = <String, int>{};
+    for (final t in connection.tables) {
+      counts[t.type] = (counts[t.type] ?? 0) + 1;
+    }
 
     return Column(
       children: [
@@ -192,12 +202,37 @@ class _ExplorerViewState extends State<_ExplorerView> {
               onChanged: (value) => context.read<AppState>().selectSchema(value),
             ),
           ),
+        if (counts.length > 1)
+          SizedBox(
+            height: 44,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              children: [
+                _KindChip(
+                  label: 'All',
+                  count: connection.tables.length,
+                  selected: _kind.isEmpty,
+                  onTap: () => setState(() => _kind = ''),
+                ),
+                for (final kind in _kindOrder)
+                  if (counts[kind] != null)
+                    _KindChip(
+                      label: _kindLabel(kind, counts[kind]!),
+                      count: counts[kind]!,
+                      selected: _kind == kind,
+                      onTap: () => setState(
+                          () => _kind = _kind == kind ? '' : kind),
+                    ),
+              ],
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.all(12),
           child: TextField(
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search),
-              hintText: 'Filter ${connection.tables.length} tables',
+              hintText: 'Filter ${tables.length} of ${connection.tables.length}',
               suffixIcon: _filter.isEmpty
                   ? null
                   : IconButton(
@@ -268,14 +303,17 @@ class _ExplorerViewState extends State<_ExplorerView> {
           leading: Icon(iconForTable(table), size: 20),
           title: Text(table.name, style: monoFont.copyWith(fontSize: 14)),
           subtitle: _subtitleFor(table),
-          trailing: IconButton(
-            tooltip: 'Query this table',
-            icon: const Icon(Icons.play_arrow_outlined),
-            onPressed: () async {
-              final sql = await context.read<AppState>().previewSql(table);
-              widget.onOpenInEditor(sql.preview);
-            },
-          ),
+          trailing: table.isRoutine
+              ? null
+              : IconButton(
+                  tooltip: 'Query this table',
+                  icon: const Icon(Icons.play_arrow_outlined),
+                  onPressed: () async {
+                    final sql =
+                        await context.read<AppState>().previewSql(table);
+                    widget.onOpenInEditor(sql.preview);
+                  },
+                ),
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute(
               builder: (_) => TableDetailScreen(
@@ -291,6 +329,7 @@ class _ExplorerViewState extends State<_ExplorerView> {
 
   Widget? _subtitleFor(TableInfo table) {
     final parts = <String>[
+      if (table.isRoutine) table.type,
       if (table.isView) 'view',
       // The estimate is the planner's, not a COUNT(*), so it is labelled as
       // approximate rather than presented as fact.
@@ -305,5 +344,59 @@ class _ExplorerViewState extends State<_ExplorerView> {
     if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
     if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
     return '$n';
+  }
+}
+
+
+const _kindOrder = [
+  ObjectKind.table,
+  ObjectKind.view,
+  ObjectKind.materializedView,
+  ObjectKind.function,
+  ObjectKind.procedure,
+];
+
+String _kindLabel(String kind, int count) {
+  final plural = count == 1;
+  switch (kind) {
+    case ObjectKind.table:
+      return plural ? 'Table' : 'Tables';
+    case ObjectKind.view:
+      return plural ? 'View' : 'Views';
+    case ObjectKind.materializedView:
+      return 'Mat. views';
+    case ObjectKind.function:
+      return plural ? 'Function' : 'Functions';
+    case ObjectKind.procedure:
+      return plural ? 'Procedure' : 'Procedures';
+  }
+  return kind;
+}
+
+class _KindChip extends StatelessWidget {
+  const _KindChip({
+    required this.label,
+    required this.count,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final int count;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: FilterChip(
+        selected: selected,
+        onSelected: (_) => onTap(),
+        showCheckmark: false,
+        visualDensity: VisualDensity.compact,
+        label: Text('$label  $count'),
+      ),
+    );
   }
 }

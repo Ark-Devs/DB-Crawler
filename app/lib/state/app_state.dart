@@ -317,6 +317,54 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  /// Asks the core what could follow the cursor.
+  ///
+  /// The logic lives in Go so it can be tested without a phone; this just
+  /// carries the request. Failures are swallowed — an editor that stops
+  /// accepting keystrokes because a hint could not be computed is worse than
+  /// one with no hints.
+  Future<({String prefix, List<Suggestion> suggestions})> complete(
+    String sql,
+    int cursor,
+  ) async {
+    final connection = _active;
+    if (connection == null || sql.trim().isEmpty) {
+      return (prefix: '', suggestions: const <Suggestion>[]);
+    }
+    try {
+      final data = await _client.call({
+        'op': 'complete',
+        'sessionId': connection.sessionId,
+        'sql': sql,
+        'cursor': cursor,
+      });
+      return (
+        prefix: data['prefix'] as String? ?? '',
+        suggestions: ((data['suggestions'] as List<dynamic>?) ?? const [])
+            .map((s) => Suggestion.fromJson(s as Map<String, dynamic>))
+            .toList(),
+      );
+    } on CoreException {
+      return (prefix: '', suggestions: const <Suggestion>[]);
+    }
+  }
+
+  /// The source of a stored function or procedure.
+  Future<String> routineDefinition(TableInfo object) async {
+    final connection = _active;
+    if (connection == null) {
+      throw CoreException('no_session', 'Not connected.');
+    }
+    final data = await _client.call({
+      'op': 'routineDefinition',
+      'sessionId': connection.sessionId,
+      'schema': object.schema,
+      'table': object.name,
+      'kind': object.type,
+    });
+    return data['definition'] as String? ?? '';
+  }
+
   // --- running SQL --------------------------------------------------------
 
   /// Runs [statement], or the editor's contents when it is null.

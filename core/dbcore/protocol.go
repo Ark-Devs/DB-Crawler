@@ -40,6 +40,10 @@ type Request struct {
 	Engine string   `json:"engine,omitempty"`
 	Params []string `json:"params,omitempty"`
 
+	// Cursor is a rune offset into SQL, for completion.
+	Cursor int    `json:"cursor,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+
 	MaxRows        int   `json:"maxRows,omitempty"`
 	TimeoutSeconds int   `json:"timeoutSeconds,omitempty"`
 	StopOnError    *bool `json:"stopOnError,omitempty"`
@@ -76,7 +80,7 @@ const (
 	CodeCancelled    = "cancelled"
 	CodeUnknownOp    = "unknown_op"
 	protocolVersion  = 1
-	coreVersionLabel = "db-crawler-core/0.0.5"
+	coreVersionLabel = "db-crawler-core/0.0.6"
 )
 
 // Handle decodes, dispatches, and encodes one request. It never returns an
@@ -244,11 +248,30 @@ func (m *Manager) dispatch(ctx context.Context, req Request) (resp Response) {
 
 	case "tables":
 		return m.withSession(req, func(s *Session) Response {
-			tables, err := s.Tables(ctx, req.Schema)
+			// Tables, views, functions, and procedures in one list; the
+			// explorer filters by kind rather than making four round trips.
+			objects, err := s.Objects(ctx, req.Schema)
 			if err != nil {
 				return failFromError(err, CodeQuery)
 			}
-			return ok(map[string]any{"tables": tables})
+			return ok(map[string]any{"tables": objects})
+		})
+
+	case "routineDefinition":
+		return m.withSession(req, func(s *Session) Response {
+			if req.Table == "" {
+				return fail(CodeBadRequest, "name is required")
+			}
+			def, err := s.RoutineDefinition(ctx, req.Schema, req.Table, req.Kind)
+			if err != nil {
+				return failFromError(err, CodeQuery)
+			}
+			return ok(map[string]any{"definition": def})
+		})
+
+	case "complete":
+		return m.withSession(req, func(s *Session) Response {
+			return ok(s.Complete(ctx, req.SQL, req.Cursor))
 		})
 
 	case "table":
