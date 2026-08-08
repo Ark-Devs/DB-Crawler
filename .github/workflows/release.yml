@@ -1,0 +1,255 @@
+name: Release
+
+# Builds the installable artifacts and attaches them to a GitHub Release.
+#
+# This runs on GitHub's runners rather than locally because they carry the
+# Android SDK, the NDK, and Xcode — the three toolchains the app cannot be
+# packaged without. Neither artifact can be produced on a Linux box with no
+# Android SDK, and the IPA cannot be produced off macOS at all.
+
+on:
+  push:
+    tags: ["v*"]
+  # Available by hand so a release can be re-cut without moving a tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release"
+        required: true
+        default: v0.0.1-beta
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: "3.35.1"
+  NDK_VERSION: r27c
+  ANDROID_API: "23"
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # The APK is only useful if the core inside it works, and the core is
+      # the part that is engine-specific and easy to break. Failing here costs
+      # a minute; failing on someone's phone costs an afternoon.
+      - name: Test the core
+        working-directory: core
+        run: go test -race -count=1 ./...
+
+      - name: Build the native core for every ABI
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: ./tool/build-core.sh android
+
+      - name: Install app dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Analyze and test the app
+        working-directory: app
+        run: |
+          flutter analyze --fatal-infos
+          flutter test
+
+      # Split per ABI as well as universal. The per-ABI files are roughly a
+      # third of the size because each carries one copy of the Go core instead
+      # of three, which matters when the install is a download over mobile
+      # data. The universal one is the safe default for anyone unsure which
+      # their phone is.
+      - name: Build the APKs
+        working-directory: app
+        run: |
+          flutter build apk --release --split-per-abi
+          flutter build apk --release
+
+      - name: Name the artifacts
+        id: rename
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          OUT=build/apk
+          mkdir -p "$OUT"
+          SRC=app/build/app/outputs/flutter-apk
+          cp "$SRC/app-release.apk"              "$OUT/db-crawler-$TAG-universal.apk"
+          cp "$SRC/app-arm64-v8a-release.apk"    "$OUT/db-crawler-$TAG-arm64-v8a.apk"
+          cp "$SRC/app-armeabi-v7a-release.apk"  "$OUT/db-crawler-$TAG-armeabi-v7a.apk"
+          cp "$SRC/app-x86_64-release.apk"       "$OUT/db-crawler-$TAG-x86_64.apk"
+          ( cd "$OUT" && sha256sum *.apk > SHA256SUMS.txt )
+          ls -lh "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: build/apk/*
+
+  ios:
+    name: iOS IPA (unsigned)
+    runs-on: macos-14
+    # An unsigned IPA needs no secrets, but it also cannot be installed
+    # without a signing certificate or a sideloading tool. The Android release
+    # must not be blocked by anything that goes wrong here.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build the native core
+        run: ./tool/build-core.sh ios
+
+      - name: Install app dependencies
+        working-directory: app
+        run: flutter pub get
+
+      # --no-codesign produces a .app with no signature. Packaging it as an
+      # IPA by hand is what `flutter build ipa` would do with a signing
+      # identity, minus the signing.
+      - name: Build without code signing
+        working-directory: app
+        run: flutter build ios --release --no-codesign
+
+      - name: Package the IPA
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          OUT=build/ipa
+          mkdir -p "$OUT" Payload
+          cp -r app/build/ios/iphoneos/Runner.app Payload/
+          zip -qry "$OUT/db-crawler-$TAG-unsigned.ipa" Payload
+          rm -rf Payload
+          ( cd "$OUT" && shasum -a 256 *.ipa > SHA256SUMS.txt )
+          ls -lh "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: build/ipa/*
+
+  release:
+    name: Publish the release
+    needs: [android, ios]
+    # Runs even when the iOS job failed, so a working Android build still
+    # ships. `always()` alone would also publish after a cancellation, hence
+    # the explicit check on the job that must succeed.
+    if: always() && needs.android.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect the files
+        id: collect
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.apk' -o -name '*.ipa' \) -exec cp {} release/ \;
+          ( cd release && sha256sum * > SHA256SUMS.txt )
+          ls -lh release
+          # `[ -f glob ]` breaks on zero or multiple matches, which is exactly
+          # the case being tested for. Count the matches instead.
+          if [ "$(find release -name '*.ipa' | wc -l)" -gt 0 ]; then
+            echo "has_ipa=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_ipa=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Note whether iOS made it
+        id: ios_note
+        run: |
+          if [ "${{ steps.collect.outputs.has_ipa }}" = "true" ]; then
+            echo 'text=An unsigned IPA is attached. It cannot be installed by tapping it — see below.' >> "$GITHUB_OUTPUT"
+          else
+            echo 'text=**No IPA in this release** — the iOS build did not succeed. Check the `iOS IPA (unsigned)` job in the workflow run.' >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: DB Crawler ${{ github.event.inputs.tag || github.ref_name }}
+          prerelease: true
+          files: release/*
+          body: |
+            First beta of DB Crawler — a SQL client for phones, talking to
+            SQL Server / Azure SQL, PostgreSQL, MySQL / MariaDB, and SQLite.
+
+            ## Android
+
+            Grab **`db-crawler-…-arm64-v8a.apk`** unless you know your phone is
+            something else — that covers essentially every Android device from
+            the last several years. `universal` works everywhere and is about
+            three times the size.
+
+            You will need to allow installing from your browser or file
+            manager the first time, since this is not from the Play Store.
+
+            These are signed with a **debug key**, which is fine for sideloading
+            and not fine for the Play Store. A release key comes before any
+            store submission.
+
+            ## iOS
+
+            ${{ steps.ios_note.outputs.text }}
+
+            An unsigned IPA needs either an Apple Developer certificate to
+            re-sign it, or a sideloading tool such as AltStore or Sideloadly.
+            Apple has no route for installing unsigned apps directly.
+
+            ## What works
+
+            Saved connections with passwords in the phone's keystore; a schema
+            explorer down to columns, indexes, and foreign keys; a SQL editor
+            with multi-statement batches and a working cancel; a results grid
+            with CSV and JSON export; and searchable query history.
+
+            A read-only switch per connection refuses anything that is not a
+            read — worth leaving on for production.
+
+            ## What does not, yet
+
+            No editing rows from the grid, no syntax highlighting, and one
+            connection open at a time. The reconstructed `CREATE TABLE` is a
+            readable summary rather than a runnable script.
+
+            ## Verify a download
+
+            `SHA256SUMS.txt` is attached.
+
+            Full notes: [README](https://github.com/Ark-Devs/DB-Crawler#readme)

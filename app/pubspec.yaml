@@ -1,7 +1,7 @@
 name: db_crawler
 description: A SQL client for phones — browse schemas and run queries against SQL Server, PostgreSQL, MySQL, and SQLite.
 publish_to: "none"
-version: 0.1.0+1
+version: 0.0.1+1
 
 environment:
   sdk: ^3.9.0

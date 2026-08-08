@@ -80,17 +80,15 @@ build_android() {
     mkdir -p "$(dirname "$out")"
 
     info "  $abi"
-    local extra=()
-    # 32-bit ARM needs the soft-float ABI flag; without it the linker picks a
-    # hard-float variant that will not load on some devices.
-    [[ "$goarch" == "arm" ]] && extra=(GOARM=7)
-
+    # GOARM only means anything for 32-bit ARM, and it is harmless elsewhere,
+    # so it is always set rather than conditionally appended — an empty array
+    # expanded under `set -u` is an error on the bash 3.2 that macOS ships.
     ( cd "$CORE" && env \
         CGO_ENABLED=1 \
         GOOS=android \
         GOARCH="$goarch" \
+        GOARM=7 \
         CC="$bin/${triple}${ANDROID_API}-clang" \
-        "${extra[@]}" \
         go build -buildmode=c-shared -trimpath -ldflags "$LDFLAGS" -o "$out" ./ffi )
 
     # The generated C header is only useful to a C caller; Dart looks the
@@ -132,11 +130,19 @@ build_ios() {
       CGO_LDFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -arch arm64 -mios-simulator-version-min=13.0" \
       go build -buildmode=c-archive -trimpath -ldflags "$LDFLAGS" -o "$sim" ./ffi )
 
+  # Each slice gets a headers directory holding only the generated header.
+  # Passing the directory the archive sits in would package a 20 MB .a as a
+  # "header" in every slice.
+  for side in device simulator; do
+    mkdir -p "$IOS_LIBS/$side/include"
+    mv -f "$IOS_LIBS/$side/libdbcrawler.h" "$IOS_LIBS/$side/include/"
+  done
+
   local xcf="$IOS_LIBS/DbCrawlerCore.xcframework"
   rm -rf "$xcf"
   xcodebuild -create-xcframework \
-    -library "$device" -headers "$(dirname "$device")" \
-    -library "$sim"    -headers "$(dirname "$sim")" \
+    -library "$device" -headers "$IOS_LIBS/device/include" \
+    -library "$sim"    -headers "$IOS_LIBS/simulator/include" \
     -output "$xcf"
 
   info "iOS framework at $xcf"

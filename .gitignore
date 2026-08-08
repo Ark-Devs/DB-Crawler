@@ -32,7 +32,9 @@ app/android/key.properties
 *.keystore
 app/**/GeneratedPluginRegistrant.*
 app/.packages
-pubspec.lock
+
+# pubspec.lock IS committed: this repo ships built artifacts, and a
+# release has to be reproducible from its tag.
 
 # Go
 core/vendor/
