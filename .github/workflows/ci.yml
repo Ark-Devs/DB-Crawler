@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  core:
+    name: Go core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Vet
+        working-directory: core
+        run: go vet ./...
+
+      - name: Check formatting
+        working-directory: core
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # The suite runs against a real SQLite database, so it exercises the
+      # driver, the type conversion, and the catalog queries rather than a
+      # mock that would only prove the code agrees with itself.
+      - name: Test
+        working-directory: core
+        run: go test -race -count=1 ./...
+
+  native:
+    name: Android core (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            goarch: arm64
+            triple: aarch64-linux-android
+          - abi: armeabi-v7a
+            goarch: arm
+            triple: armv7a-linux-androideabi
+          - abi: x86_64
+            goarch: amd64
+            triple: x86_64-linux-android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+
+      # cgo has to be built with a cross-compiler targeting Android's libc,
+      # which is the part that cannot be checked without the NDK — so it is
+      # checked here, on every push, for every ABI the app ships.
+      - name: Cross-compile
+        working-directory: core
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          CGO_ENABLED=1 GOOS=android GOARCH=${{ matrix.goarch }} GOARM=7 \
+            CC="$BIN/${{ matrix.triple }}23-clang" \
+            go build -buildmode=c-shared -trimpath -ldflags "-s -w" \
+              -o "libdbcrawler.so" ./ffi
+
+      - name: Check the exported symbols
+        working-directory: core
+        run: |
+          # Dart looks these up by name at runtime. A rename here is a crash
+          # on first launch, not a build failure, so it is asserted.
+          for symbol in dbcrawler_call dbcrawler_free dbcrawler_shutdown; do
+            if ! nm -D --defined-only libdbcrawler.so | grep -q " T $symbol$"; then
+              echo "missing exported symbol: $symbol"
+              exit 1
+            fi
+          done
+          ls -lh libdbcrawler.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libdbcrawler-${{ matrix.abi }}
+          path: core/libdbcrawler.so
+          retention-days: 14
+
+  app:
+    name: Flutter app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.35.1"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: app
+        run: flutter analyze --fatal-infos
+
+      - name: Test
+        working-directory: app
+        run: flutter test

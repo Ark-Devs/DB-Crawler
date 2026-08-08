@@ -1,0 +1,34 @@
+name: db_crawler
+description: A SQL client for phones — browse schemas and run queries against SQL Server, PostgreSQL, MySQL, and SQLite.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # The bridge to the Go core. Everything that touches a database goes
+  # through this and nothing else.
+  ffi: ^2.1.3
+
+  # Where saved connections live. Non-secret fields go in a JSON file under
+  # the app's private directory; passwords go in the platform keystore.
+  path_provider: ^2.1.5
+  flutter_secure_storage: ^9.2.4
+
+  provider: ^6.1.2
+
+  # Opening a local .db file, and getting an exported CSV back off the device.
+  file_picker: ^8.1.7
+  share_plus: ^10.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
