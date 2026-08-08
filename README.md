@@ -84,8 +84,9 @@ export ANDROID_NDK_HOME=~/Android/Sdk/ndk/27.0.12077973
 cd app && flutter run
 ```
 
-For iOS, `./tool/build-core.sh ios` on a Mac, then link the produced
-xcframework — the script prints the one-time Xcode step at the end.
+For iOS, `./tool/build-core.sh ios` on a Mac, then `cd app && flutter run`.
+No Xcode step: the Podfile declares the core as a pod and the podspec carries
+the linker flags.
 
 ## Working on the core without a phone
 
@@ -159,6 +160,20 @@ group, or a database not listening on a public address.
 
 **"login failed"** means the server was reached and answered — credentials,
 not connectivity.
+
+**"negative serial number"** was a real failure against SQL Server and is
+fixed. Its default self-signed certificate usually has a serial whose leading
+bit is set, which DER reads as negative, and Go 1.23 began rejecting those
+while parsing — before certificate verification is reached, so
+`TrustServerCertificate` could not rescue it and the connection was impossible
+at any Encryption setting except Off. The main packages now carry
+`//go:debug x509negativeserial=1`, restoring the older parsing behaviour. That
+relaxes a strictness check, not a trust check; whether the certificate is
+trusted is still decided by the Encryption setting.
+
+**"certificate could not be verified"** is Verify doing its job against a
+self-signed certificate. Use Require — still encrypted, just not checking who
+issued the certificate.
 
 ### The database field
 

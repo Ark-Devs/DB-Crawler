@@ -131,6 +131,23 @@ func connectHint(err error) string {
 			" Check the port, and that the server accepts TCP connections."
 	case strings.Contains(msg, "no such host"):
 		return "\n\nThe hostname did not resolve. Check the spelling, or use an IP address."
+	case strings.Contains(msg, "certificate signed by unknown authority"),
+		strings.Contains(msg, "certificate is not trusted"),
+		strings.Contains(msg, "certificate is valid for"):
+		// Almost always Verify against a self-signed certificate, which is
+		// working exactly as intended.
+		return "\n\nThe server's certificate could not be verified. If it is self-signed" +
+			" — which SQL Server's default certificate is — use Require rather than Verify." +
+			" The connection stays encrypted either way."
+	case strings.Contains(msg, "negative serial number"):
+		// Should be unreachable: the main packages carry
+		// //go:debug x509negativeserial=1. If it surfaces, that directive has
+		// been lost, so say so rather than blaming the server.
+		return "\n\nThis is a known quirk of SQL Server's self-signed certificate that the" +
+			" app is meant to tolerate. Please report it — the build is missing a setting."
+	case strings.Contains(msg, "tls handshake"), strings.Contains(msg, "tls:"):
+		return "\n\nThe server was reached but encryption could not be negotiated." +
+			" Check whether it accepts encrypted connections, or try a different Encryption setting."
 	case strings.Contains(msg, "login failed"),
 		strings.Contains(msg, "password authentication failed"):
 		return "\n\nThe server was reached — this is a credentials problem, not a network one."

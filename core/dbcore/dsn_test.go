@@ -235,6 +235,19 @@ func TestConnectHint(t *testing.T) {
 		{"refused", "dial tcp 10.0.0.1:1433: connection refused", "nothing is listening"},
 		{"bad host", "dial tcp: lookup nope: no such host", "did not resolve"},
 		{"bad credentials", "mssql: Login failed for user 'sa'", "credentials problem"},
+		{
+			// Verify against a self-signed certificate. Working as intended,
+			// but the raw message does not say what to do about it.
+			name: "untrusted certificate",
+			err:  "TLS Handshake failed: x509: certificate signed by unknown authority",
+			want: "use Require rather than Verify",
+		},
+		{
+			name: "negative serial slipped through",
+			err:  "TLS Handshake failed: x509: negative serial number",
+			want: "missing a setting",
+		},
+		{"other tls failure", "TLS Handshake failed: tls: handshake failure", "encryption could not be negotiated"},
 		{"nothing useful to add", "some unrecognised driver failure", ""},
 	}
 	for _, tc := range tests {

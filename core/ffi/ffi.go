@@ -8,6 +8,20 @@
 //
 // See tool/build-core.sh, which drives this for every architecture the app
 // ships.
+
+// SQL Server's auto-generated self-signed certificate routinely carries a
+// serial number whose leading bit is set, which DER reads as negative. Go 1.23
+// began rejecting those at parse time, so the TLS handshake fails before
+// verification is even reached — meaning TrustServerCertificate does not help
+// and the connection cannot be made at all.
+//
+// This restores the pre-1.23 parsing behaviour. It relaxes a strictness check,
+// not a trust check: whether the certificate is trusted is still decided by the
+// connection's Encryption setting. The alternative is telling people to turn
+// encryption off to reach their own database, which is far worse than accepting
+// a malformed serial number.
+//go:debug x509negativeserial=1
+
 package main
 
 /*
