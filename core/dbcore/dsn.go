@@ -254,6 +254,26 @@ func (c Config) sqliteDSN() string {
 	return "file:" + c.File + "?" + q.Encode()
 }
 
+// ForEnumeration returns a copy of the config suitable for listing the
+// databases on a server, before the user has picked one.
+//
+// The target database is cleared, because at that point the field holds either
+// nothing or a half-typed name, and connecting to a database that does not
+// exist fails outright — which is exactly the moment the user needs the list.
+//
+// PostgreSQL is the exception: it cannot connect without a database at all, so
+// it bootstraps through `postgres`, which every server has.
+func (c Config) ForEnumeration() Config {
+	if c.Engine == PostgreSQL {
+		if strings.TrimSpace(c.Database) == "" {
+			c.Database = "postgres"
+		}
+		return c
+	}
+	c.Database = ""
+	return c
+}
+
 // Redacted returns a copy safe to log or show in a diagnostics screen. The
 // password is the only field worth hiding and it is never worth showing.
 func (c Config) Redacted() Config {

@@ -35,6 +35,7 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
   bool _obscurePassword = true;
   bool _passwordTouched = false;
   bool _hasStoredPassword = false;
+  bool _loadingDatabases = false;
   bool _testing = false;
   String _testResult = '';
   bool _testOk = false;
@@ -100,10 +101,7 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
             const SizedBox(height: 16),
             TextFormField(
               controller: _name,
-              decoration: const InputDecoration(
-                labelText: 'Name',
-                hintText: 'Inventory — production',
-              ),
+              decoration: const InputDecoration(labelText: 'Name'),
               textCapitalization: TextCapitalization.sentences,
               validator: (v) =>
                   (v == null || v.trim().isEmpty) ? 'Give it a name' : null,
@@ -179,10 +177,7 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
               flex: 3,
               child: TextFormField(
                 controller: _host,
-                decoration: const InputDecoration(
-                  labelText: 'Host',
-                  hintText: 'db.example.com',
-                ),
+                decoration: const InputDecoration(labelText: 'Host'),
                 keyboardType: TextInputType.url,
                 autocorrect: false,
                 validator: (v) =>
@@ -215,9 +210,24 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
           controller: _database,
           decoration: InputDecoration(
             labelText: 'Database',
-            hintText: _engine == Engine.sqlserver ? 'SQ_Inventory' : null,
+            // Typing stays available: listing databases needs permission the
+            // login may not have, and being unable to enumerate should never
+            // mean being unable to connect.
+            suffixIcon: IconButton(
+              tooltip: 'Choose from the server',
+              icon: _loadingDatabases
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.expand_more),
+              onPressed: _loadingDatabases ? null : _pickDatabase,
+            ),
           ),
           autocorrect: false,
+          enableSuggestions: false,
+          onChanged: (_) => setState(() {}),
           validator: (v) {
             if (_engine == Engine.postgres && (v == null || v.trim().isEmpty)) {
               return 'PostgreSQL needs a database';
@@ -225,6 +235,17 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
             return null;
           },
         ),
+        if (_engine != Engine.postgres) ...[
+          const SizedBox(height: 6),
+          Text(
+            _database.text.trim().isEmpty
+                ? 'Tap the arrow to list what is on the server. Left empty, you '
+                    'get whatever this login opens by default — usually master, '
+                    'not yours.'
+                : 'Tap the arrow to pick a different one.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
         const SizedBox(height: 16),
         TextFormField(
           controller: _user,
@@ -284,6 +305,70 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
           ),
         ],
       ];
+
+  /// Shows a message where the user is actually looking. The Test-connection
+  /// banner lives at the bottom of a scrolling form, which is the wrong place
+  /// for a failure they triggered from a field near the top.
+  void _report(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(message),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 6),
+    ));
+  }
+
+  /// Fetches the databases on the server and lets the user pick one.
+  ///
+  /// The fetch needs a reachable host and working credentials, so it doubles
+  /// as a connection test — and when it fails, the reason is shown here rather
+  /// than left for the user to discover after saving.
+  Future<void> _pickDatabase() async {
+    final host = _host.text.trim();
+    final user = _user.text.trim();
+    if (host.isEmpty || user.isEmpty) {
+      _report('Fill in the host and username first.');
+      return;
+    }
+
+    setState(() {
+      _loadingDatabases = true;
+      _testResult = '';
+    });
+
+    final state = context.read<AppState>();
+    final profile = _buildProfile();
+    final password = _password.text.isNotEmpty
+        ? _password.text
+        : await state.connections.password(profile.id);
+
+    final result = await state.fetchDatabases(profile, password);
+    if (!mounted) return;
+    setState(() => _loadingDatabases = false);
+
+    if (!result.ok) {
+      _report(result.message);
+      return;
+    }
+    if (result.databases.isEmpty) {
+      _report('Connected, but this login cannot see any databases.');
+      return;
+    }
+
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => _DatabaseList(
+        databases: result.databases,
+        selected: _database.text.trim(),
+        // PostgreSQL cannot connect without naming a database, so there is no
+        // meaningful "let the server decide" for it.
+        allowServerDefault: _engine != Engine.postgres,
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    setState(() => _database.text = chosen);
+  }
 
   Future<void> _pickFile() async {
     final result = await FilePicker.platform.pickFiles(withReadStream: false);
@@ -452,6 +537,109 @@ class _TestBanner extends StatelessWidget {
             child: SelectableText(
               message,
               style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+/// The list of databases fetched from the server.
+///
+/// A filter appears once the list is long enough to be worth scrolling — a
+/// server with two hundred databases is common and unusable on a phone
+/// otherwise.
+class _DatabaseList extends StatefulWidget {
+  const _DatabaseList({
+    required this.databases,
+    required this.selected,
+    required this.allowServerDefault,
+  });
+
+  final List<String> databases;
+  final String selected;
+  final bool allowServerDefault;
+
+  @override
+  State<_DatabaseList> createState() => _DatabaseListState();
+}
+
+class _DatabaseListState extends State<_DatabaseList> {
+  String _filter = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final needle = _filter.trim().toLowerCase();
+    final matches = needle.isEmpty
+        ? widget.databases
+        : widget.databases
+            .where((d) => d.toLowerCase().contains(needle))
+            .toList();
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.6,
+      maxChildSize: 0.9,
+      builder: (context, controller) => Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                Text('Databases', style: theme.textTheme.titleSmall),
+                const SizedBox(width: 8),
+                Text('${widget.databases.length}',
+                    style: theme.textTheme.labelSmall
+                        ?.copyWith(color: theme.colorScheme.outline)),
+              ],
+            ),
+          ),
+          if (widget.databases.length > 8)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: TextField(
+                autofocus: false,
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Filter',
+                ),
+                onChanged: (v) => setState(() => _filter = v),
+              ),
+            ),
+          Expanded(
+            child: ListView(
+              controller: controller,
+              children: [
+                if (widget.allowServerDefault && needle.isEmpty) ...[
+                  ListTile(
+                    leading: const Icon(Icons.star_outline, size: 20),
+                    title: const Text('Server default'),
+                    subtitle: const Text(
+                        'Whatever this login opens by default, usually master'),
+                    selected: widget.selected.isEmpty,
+                    onTap: () => Navigator.of(context).pop(''),
+                  ),
+                  const Divider(height: 1),
+                ],
+                for (final name in matches)
+                  ListTile(
+                    leading: const Icon(Icons.storage_outlined, size: 20),
+                    title: Text(name, style: monoFont.copyWith(fontSize: 14)),
+                    selected: name == widget.selected,
+                    trailing: name == widget.selected
+                        ? const Icon(Icons.check, size: 18)
+                        : null,
+                    onTap: () => Navigator.of(context).pop(name),
+                  ),
+                if (matches.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Center(child: Text('Nothing matches.')),
+                  ),
+              ],
             ),
           ),
         ],

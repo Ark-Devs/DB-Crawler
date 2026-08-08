@@ -76,7 +76,7 @@ const (
 	CodeCancelled    = "cancelled"
 	CodeUnknownOp    = "unknown_op"
 	protocolVersion  = 1
-	coreVersionLabel = "db-crawler-core/0.0.3"
+	coreVersionLabel = "db-crawler-core/0.0.4"
 )
 
 // Handle decodes, dispatches, and encodes one request. It never returns an
@@ -158,6 +158,28 @@ func (m *Manager) dispatch(ctx context.Context, req Request) (resp Response) {
 		version, _ := s.serverVersion(ctx)
 		m.Close(s.ID)
 		return ok(map[string]any{"reachable": true, "serverVersion": version})
+
+	case "databasesFor":
+		// Lists the databases on a server the app is not connected to, so the
+		// connection editor can offer them rather than making someone recall a
+		// name and type it exactly right on a phone keyboard.
+		if req.Config == nil {
+			return fail(CodeBadRequest, "config is required")
+		}
+		if req.Config.Engine == SQLite {
+			// A SQLite connection is a file, not a server. Nothing to list.
+			return ok(map[string]any{"databases": []string{}})
+		}
+		probe, err := m.Open(ctx, req.Config.ForEnumeration())
+		if err != nil {
+			return failFromError(err, CodeConnect)
+		}
+		names, err := probe.Databases(ctx)
+		m.Close(probe.ID)
+		if err != nil {
+			return failFromError(err, CodeQuery)
+		}
+		return ok(map[string]any{"databases": names})
 
 	case "closeConnection":
 		if err := m.Close(req.SessionID); err != nil {

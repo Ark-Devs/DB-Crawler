@@ -265,3 +265,44 @@ func TestConnectHint(t *testing.T) {
 		})
 	}
 }
+
+func TestForEnumeration(t *testing.T) {
+	// Listing databases happens before one has been chosen, so whatever is in
+	// the field must not be allowed to fail the connection.
+	t.Run("sql server drops a half-typed database", func(t *testing.T) {
+		cfg := Config{Engine: SQLServer, Host: "h", User: "u", Database: "SQ_Inv"}
+		if got := cfg.ForEnumeration().Database; got != "" {
+			t.Errorf("database = %q, want empty", got)
+		}
+		// The original must be untouched — it is still what the user typed.
+		if cfg.Database != "SQ_Inv" {
+			t.Error("ForEnumeration mutated the receiver")
+		}
+	})
+
+	t.Run("mysql drops it too", func(t *testing.T) {
+		cfg := Config{Engine: MySQL, Host: "h", User: "u", Database: "shp"}
+		if got := cfg.ForEnumeration().Database; got != "" {
+			t.Errorf("database = %q, want empty", got)
+		}
+	})
+
+	t.Run("postgres bootstraps, because it cannot connect without one", func(t *testing.T) {
+		cfg := Config{Engine: PostgreSQL, Host: "h", User: "u"}
+		enum := cfg.ForEnumeration()
+		if enum.Database != "postgres" {
+			t.Errorf("database = %q, want postgres", enum.Database)
+		}
+		// And the resulting config has to actually be dialable.
+		if problems := enum.Validate(); len(problems) != 0 {
+			t.Errorf("enumeration config is invalid: %v", problems)
+		}
+	})
+
+	t.Run("postgres keeps a database the user already chose", func(t *testing.T) {
+		cfg := Config{Engine: PostgreSQL, Host: "h", User: "u", Database: "shop"}
+		if got := cfg.ForEnumeration().Database; got != "shop" {
+			t.Errorf("database = %q, want shop", got)
+		}
+	})
+}

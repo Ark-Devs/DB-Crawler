@@ -153,6 +153,30 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Lists the databases on a server the app is not connected to.
+  ///
+  /// This is what lets the connection editor offer a list instead of asking
+  /// someone to recall a database name and type it exactly right on a phone
+  /// keyboard — which is how you end up staring at "login failed" because of
+  /// a capital letter.
+  Future<({bool ok, List<String> databases, String message})> fetchDatabases(
+    ConnectionProfile profile,
+    String password,
+  ) async {
+    try {
+      final data = await _client.call({
+        'op': 'databasesFor',
+        'config': profile.toCoreConfig(password: password),
+      });
+      final names = ((data['databases'] as List<dynamic>?) ?? const [])
+          .map((d) => '$d')
+          .toList();
+      return (ok: true, databases: names, message: '');
+    } on CoreException catch (error) {
+      return (ok: false, databases: <String>[], message: error.message);
+    }
+  }
+
   /// Checks a connection without keeping it open, for the editor's Test button.
   Future<({bool ok, String message})> testConnection(
     ConnectionProfile profile,
