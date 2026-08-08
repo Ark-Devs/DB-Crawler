@@ -42,6 +42,36 @@ enum TlsMode {
       TlsMode.values.firstWhere((m) => m.id == id, orElse: () => TlsMode.require);
 }
 
+/// How SQL Server verifies who you are.
+///
+/// Made explicit because the driver otherwise infers it from the shape of the
+/// username, and an inferred choice is invisible: someone who cannot log in
+/// has no way to tell which method was even attempted.
+enum AuthMethod {
+  sql(
+    'sql',
+    'SQL Server',
+    'A login the database server itself holds. This is what you want unless '
+        'your organisation says otherwise.',
+  ),
+  windows(
+    'windows',
+    'Windows',
+    'A domain account over NTLM. The username must include the domain, as '
+        'DOMAIN\\username.',
+  );
+
+  const AuthMethod(this.id, this.label, this.description);
+
+  final String id;
+  final String label;
+  final String description;
+
+  static AuthMethod fromId(String? id) =>
+      AuthMethod.values.firstWhere((a) => a.id == id,
+          orElse: () => AuthMethod.sql);
+}
+
 /// A saved connection.
 ///
 /// The password is deliberately absent. It lives in the platform keystore
@@ -58,6 +88,7 @@ class ConnectionProfile {
     this.database = '',
     this.user = '',
     this.file = '',
+    this.auth = AuthMethod.sql,
     this.tls = TlsMode.require,
     this.readOnly = false,
     this.connectTimeoutSeconds = 15,
@@ -75,6 +106,10 @@ class ConnectionProfile {
   final String database;
   final String user;
   final String file;
+
+  /// SQL Server only; the other engines have a single scheme.
+  final AuthMethod auth;
+
   final TlsMode tls;
 
   /// Blocks anything that is not a read. Worth turning on for production, and
@@ -112,6 +147,7 @@ class ConnectionProfile {
     String? database,
     String? user,
     String? file,
+    AuthMethod? auth,
     TlsMode? tls,
     bool? readOnly,
     int? connectTimeoutSeconds,
@@ -130,6 +166,7 @@ class ConnectionProfile {
       database: database ?? this.database,
       user: user ?? this.user,
       file: file ?? this.file,
+      auth: auth ?? this.auth,
       tls: tls ?? this.tls,
       readOnly: readOnly ?? this.readOnly,
       connectTimeoutSeconds: connectTimeoutSeconds ?? this.connectTimeoutSeconds,
@@ -150,6 +187,7 @@ class ConnectionProfile {
         if (user.isNotEmpty) 'user': user,
         if (password.isNotEmpty) 'password': password,
         if (file.isNotEmpty) 'file': file,
+        if (engine == Engine.sqlserver) 'auth': auth.id,
         'tls': tls.id,
         'connectTimeoutSeconds': connectTimeoutSeconds,
         'readOnly': readOnly,
@@ -166,6 +204,7 @@ class ConnectionProfile {
         'database': database,
         'user': user,
         'file': file,
+        'auth': auth.id,
         'tls': tls.id,
         'readOnly': readOnly,
         'connectTimeoutSeconds': connectTimeoutSeconds,
@@ -185,6 +224,7 @@ class ConnectionProfile {
       database: json['database'] as String? ?? '',
       user: json['user'] as String? ?? '',
       file: json['file'] as String? ?? '',
+      auth: AuthMethod.fromId(json['auth'] as String?),
       tls: TlsMode.fromId(json['tls'] as String?),
       readOnly: json['readOnly'] as bool? ?? false,
       connectTimeoutSeconds: json['connectTimeoutSeconds'] as int? ?? 15,

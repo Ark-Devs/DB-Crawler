@@ -246,4 +246,52 @@ void main() {
       expect(detail.foreignKeys, isEmpty);
     });
   });
+
+  group('AuthMethod', () {
+    test('defaults to SQL Server authentication', () {
+      const profile = ConnectionProfile(
+        id: '1',
+        name: 'X',
+        engine: Engine.sqlserver,
+        host: 'h',
+        user: 'sa',
+      );
+      expect(profile.auth, AuthMethod.sql);
+      expect(profile.toCoreConfig()['auth'], 'sql');
+    });
+
+    test('is only sent for SQL Server', () {
+      const profile = ConnectionProfile(
+        id: '1',
+        name: 'X',
+        engine: Engine.postgres,
+        host: 'h',
+        database: 'd',
+        user: 'u',
+      );
+      // The other engines have one scheme; sending a method would imply a
+      // choice that does not exist.
+      expect(profile.toCoreConfig().containsKey('auth'), isFalse);
+    });
+
+    test('survives a save and reload', () {
+      const original = ConnectionProfile(
+        id: '1',
+        name: 'X',
+        engine: Engine.sqlserver,
+        host: 'h',
+        user: r'CORP\muhammed',
+        auth: AuthMethod.windows,
+      );
+      final restored =
+          ConnectionProfile.fromJson(jsonDecode(jsonEncode(original.toJson())));
+      expect(restored.auth, AuthMethod.windows);
+      expect(restored.user, r'CORP\muhammed');
+    });
+
+    test('an unknown method from a newer version falls back to SQL', () {
+      expect(AuthMethod.fromId('kerberos'), AuthMethod.sql);
+      expect(AuthMethod.fromId(null), AuthMethod.sql);
+    });
+  });
 }

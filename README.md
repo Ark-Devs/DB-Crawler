@@ -175,6 +175,17 @@ trusted is still decided by the Encryption setting.
 self-signed certificate. Use Require — still encrypted, just not checking who
 issued the certificate.
 
+### Authentication
+
+SQL Server connections pick a method explicitly: **SQL Server** (a login the
+server itself holds — the usual choice) or **Windows** (a domain account over
+NTLM, which needs the username as `DOMAIN\username`).
+
+It is a visible choice because the driver otherwise infers it from the shape of
+the username, and an inferred choice cannot be debugged: a rejected login never
+says which method was even tried. Azure SQL works over SQL Server
+authentication; Entra ID / Azure AD accounts are not supported yet.
+
 ### The database field
 
 For SQL Server the database is optional, and leaving it empty is not the same

@@ -28,6 +28,15 @@ type Config struct {
 	// File is the SQLite database path. Ignored by every other engine.
 	File string `json:"file,omitempty"`
 
+	// Auth selects how SQL Server authenticates. Empty means AuthSQL.
+	//
+	// It is explicit because the driver otherwise decides by inspecting the
+	// username — a name containing a backslash gets Windows authentication,
+	// anything else falls back to SQL authentication. That is a sensible
+	// default and an awful thing to leave invisible: a user who cannot log in
+	// has no way to tell which of the two was even attempted.
+	Auth AuthMethod `json:"auth,omitempty"`
+
 	// TLS is one of "disable", "prefer", "require", or "verify". The default
 	// is "require" for a networked engine: these connections carry a password
 	// and cross a mobile network, so unencrypted has to be a deliberate act.
@@ -47,6 +56,27 @@ type Config struct {
 	Params map[string]string `json:"params,omitempty"`
 
 	RawDSN string `json:"rawDsn,omitempty"`
+}
+
+// AuthMethod is how SQL Server verifies who you are.
+type AuthMethod string
+
+const (
+	// AuthSQL is a SQL Server login: a username and password held by the
+	// server itself. The default, and what a phone will almost always use.
+	AuthSQL AuthMethod = "sql"
+
+	// AuthWindows is Windows authentication over NTLM, for a domain account.
+	// The username must be DOMAIN\user; the driver has no other way to know
+	// which domain to authenticate against.
+	AuthWindows AuthMethod = "windows"
+)
+
+func (c Config) authMethod() AuthMethod {
+	if c.Auth == AuthWindows {
+		return AuthWindows
+	}
+	return AuthSQL
 }
 
 // tlsMode normalises the TLS field, defaulting to encrypted-and-verified for
@@ -123,6 +153,14 @@ func (c Config) Validate() []string {
 		if c.Engine == PostgreSQL && strings.TrimSpace(c.Database) == "" {
 			problems = append(problems, "database is required for PostgreSQL")
 		}
+		// NTLM needs a domain and has nowhere else to find one. Without the
+		// backslash the driver silently falls back to a SQL login, so the user
+		// picks Windows authentication and gets SQL authentication's rejection.
+		if c.Engine == SQLServer && c.authMethod() == AuthWindows &&
+			!strings.Contains(c.User, `\`) {
+			problems = append(problems,
+				`Windows authentication needs the domain: DOMAIN\username`)
+		}
 	case "":
 		problems = append(problems, "engine is required")
 	default:
@@ -156,6 +194,13 @@ func (c Config) sqlServerDSN() string {
 	q := url.Values{}
 	if c.Database != "" {
 		q.Set("database", c.Database)
+	}
+	// Naming the provider removes the guesswork. Left unset, the driver tries
+	// NTLM first and quietly falls back to a SQL login when the username has
+	// no domain in it — which works, but means a failed login never tells you
+	// which method the server actually refused.
+	if c.authMethod() == AuthWindows {
+		q.Set("authenticator", "ntlm")
 	}
 	q.Set("connection timeout", strconv.Itoa(c.timeout()))
 	// go-mssqldb spells the knobs "encrypt" and "TrustServerCertificate".

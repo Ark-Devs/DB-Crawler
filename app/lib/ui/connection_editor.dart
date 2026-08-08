@@ -20,6 +20,7 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
   final _formKey = GlobalKey<FormState>();
 
   late Engine _engine;
+  late AuthMethod _auth;
   late TlsMode _tls;
   late bool _readOnly;
   int? _colorTag;
@@ -47,6 +48,7 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
     super.initState();
     final existing = widget.existing;
     _engine = existing?.engine ?? Engine.sqlserver;
+    _auth = existing?.auth ?? AuthMethod.sql;
     _tls = existing?.tls ?? TlsMode.require;
     _readOnly = existing?.readOnly ?? false;
     _colorTag = existing?.colorTag;
@@ -246,15 +248,46 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
+        if (_engine == Engine.sqlserver) ...[
+          const SizedBox(height: 20),
+          Text('Authentication', style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(height: 8),
+          SegmentedButton<AuthMethod>(
+            segments: [
+              for (final method in AuthMethod.values)
+                ButtonSegment(value: method, label: Text(method.label)),
+            ],
+            selected: {_auth},
+            onSelectionChanged: (values) =>
+                setState(() => _auth = values.first),
+            showSelectedIcon: false,
+          ),
+          const SizedBox(height: 6),
+          Text(_auth.description,
+              style: Theme.of(context).textTheme.bodySmall),
+        ],
         const SizedBox(height: 16),
         TextFormField(
           controller: _user,
-          decoration: const InputDecoration(labelText: 'Username'),
+          decoration: InputDecoration(
+            labelText: 'Username',
+            // NTLM has nowhere else to learn the domain from.
+            hintText: _engine == Engine.sqlserver && _auth == AuthMethod.windows
+                ? r'DOMAIN\username'
+                : null,
+          ),
           autocorrect: false,
           enableSuggestions: false,
-          validator: (v) => (v == null || v.trim().isEmpty)
-              ? 'Username is required'
-              : null,
+          onChanged: (_) => setState(() {}),
+          validator: (v) {
+            if (v == null || v.trim().isEmpty) return 'Username is required';
+            if (_engine == Engine.sqlserver &&
+                _auth == AuthMethod.windows &&
+                !v.contains(r'\')) {
+              return r'Windows authentication needs DOMAIN\username';
+            }
+            return null;
+          },
         ),
         const SizedBox(height: 16),
         TextFormField(
@@ -389,6 +422,7 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
       database: _database.text.trim(),
       user: _user.text.trim(),
       file: _file.text.trim(),
+      auth: _auth,
       tls: _tls,
       readOnly: _readOnly,
       colorTag: _colorTag,
