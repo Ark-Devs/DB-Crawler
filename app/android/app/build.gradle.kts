@@ -36,11 +36,10 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        ndk {
-            // The ABIs tool/build-core.sh produces. Listing them keeps a
-            // stale .so for an ABI we no longer build out of the APK.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
+        // No `ndk { abiFilters }` here. Gradle refuses to have both that and
+        // the splits filters that `flutter build apk --split-per-abi` sets,
+        // and the per-ABI split is what the release actually ships. The APK
+        // gets exactly the ABIs tool/build-core.sh dropped into jniLibs.
     }
 
     // The Go core is cross-compiled by tool/build-core.sh and dropped here.

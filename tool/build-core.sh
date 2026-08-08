@@ -109,7 +109,7 @@ build_ios() {
   mkdir -p "$IOS_LIBS"
 
   # Device and simulator are different platforms to the linker, so each gets
-  # its own archive and they are combined into an xcframework.
+  # its own archive, selected by SDK in the podspec.
   local device="$IOS_LIBS/device/libdbcrawler.a"
   local sim="$IOS_LIBS/simulator/libdbcrawler.a"
   mkdir -p "$(dirname "$device")" "$(dirname "$sim")"
@@ -130,36 +130,25 @@ build_ios() {
       CGO_LDFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -arch arm64 -mios-simulator-version-min=13.0" \
       go build -buildmode=c-archive -trimpath -ldflags "$LDFLAGS" -o "$sim" ./ffi )
 
-  # Each slice gets a headers directory holding only the generated header.
-  # Passing the directory the archive sits in would package a 20 MB .a as a
-  # "header" in every slice.
-  for side in device simulator; do
-    mkdir -p "$IOS_LIBS/$side/include"
-    mv -f "$IOS_LIBS/$side/libdbcrawler.h" "$IOS_LIBS/$side/include/"
-  done
-
-  local xcf="$IOS_LIBS/DbCrawlerCore.xcframework"
-  rm -rf "$xcf"
-  xcodebuild -create-xcframework \
-    -library "$device" -headers "$IOS_LIBS/device/include" \
-    -library "$sim"    -headers "$IOS_LIBS/simulator/include" \
-    -output "$xcf"
-
-  info "iOS framework at $xcf"
+  # Deliberately no xcframework. CocoaPods extracts xcframework slices in a
+  # build script phase, so the extracted archive does not exist when Xcode
+  # validates build inputs, and the podspec's -force_load then fails with
+  # "Build input file cannot be found". Leaving the archives where they are
+  # lets the linker reference a path that exists before the build starts.
+  #
+  # They cannot be merged with lipo either: device and simulator are both
+  # arm64 and differ only by platform, which lipo refuses.
+  info "iOS archives in $IOS_LIBS"
+  printf '     device:    %s\n' "$(du -h "$device" | cut -f1)"
+  printf '     simulator: %s\n' "$(du -h "$sim" | cut -f1)"
   cat <<'NOTE'
 
-  One manual step in Xcode, once:
+  No Xcode step needed. app/ios/Podfile declares DbCrawlerCore as a pod and
+  its podspec adds the -force_load flags, so `flutter build ios` picks the
+  archives up on its own.
 
-    1. Open app/ios/Runner.xcworkspace
-    2. Runner target → General → Frameworks, Libraries, and Embedded Content
-    3. Add DbCrawlerCore.xcframework, set it to "Do Not Embed"
-       (it is a static archive — it links into the binary, it is not a dylib)
-    4. Build Settings → Other Linker Flags: add -lresolv
-       (the Go runtime's DNS resolver needs it)
-
-  The Dart side already expects this: NativeCore.load() uses
-  DynamicLibrary.process() on iOS, because a statically linked archive means
-  the app binary *is* the library.
+  NativeCore.load() uses DynamicLibrary.process() on iOS, because a statically
+  linked archive means the app binary *is* the library.
 NOTE
 }
 
