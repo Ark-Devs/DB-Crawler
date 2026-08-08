@@ -31,9 +31,11 @@ jobs:
     name: Android APK
     runs-on: ubuntu-latest
     steps:
+      # No `ref:` override on purpose. On a tag push this is the tagged
+      # commit; on a manual run it is the branch that was dispatched, and the
+      # release step creates the tag there. Checking out `inputs.tag` would
+      # require the tag to already exist, which defeats a manual release.
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-java@v4
         with:
@@ -116,9 +118,11 @@ jobs:
     # must not be blocked by anything that goes wrong here.
     continue-on-error: true
     steps:
+      # No `ref:` override on purpose. On a tag push this is the tagged
+      # commit; on a manual run it is the branch that was dispatched, and the
+      # release step creates the tag there. Checking out `inputs.tag` would
+      # require the tag to already exist, which defeats a manual release.
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-go@v5
         with:
