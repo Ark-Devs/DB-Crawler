@@ -1,6 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Without this the release APK cannot open a socket at all. Android
+         enforces the INTERNET permission in the kernel by GID, so a database
+         connection fails with "operation not permitted" before a single packet
+         leaves the phone — which reads like a firewall or a bad password and
+         is neither.
+
+         Flutter's template puts INTERNET only in the debug and profile
+         manifests, for hot reload. Those are not merged into a release build,
+         so an app whose entire purpose is connecting to a database ships with
+         no network access unless this line is here. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
-        android:label="db_crawler"
+        android:label="DB Crawler"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

@@ -142,6 +142,32 @@ accident the switch exists to prevent. It also has to look inside CTE bodies:
 `WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x` presents `SELECT` as
 its outermost keyword while deleting every row.
 
+## If a connection fails
+
+The app tries to say which layer failed, because the raw driver message
+usually blames the wrong one.
+
+**"operation not permitted"** means the device refused to open the socket at
+all — nothing reached the network. On Android that is the missing `INTERNET`
+permission. Flutter's template puts it only in the debug and profile
+manifests, which are not merged into a release build, so a release APK has no
+network access unless `android/app/src/main/AndroidManifest.xml` declares it.
+Beta 1 shipped without it and could not connect to anything.
+
+**"no reply from the host"** is a network path problem: firewall, security
+group, or a database not listening on a public address.
+
+**"login failed"** means the server was reached and answered — credentials,
+not connectivity.
+
+### The database field
+
+For SQL Server the database is optional, and leaving it empty is not the same
+as picking one: you land in whatever the login's default database is, usually
+`master`. The explorer will then show `master`'s tables and none of yours,
+which looks like the app is broken when it is doing exactly what it was told.
+Set it to the database you actually want.
+
 ## Security
 
 - Passwords live in the Android Keystore / iOS Keychain, keyed by connection

@@ -1,6 +1,7 @@
 package dbcore
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -213,5 +214,41 @@ func TestParseEngine(t *testing.T) {
 	}
 	if _, err := ParseEngine("oracle"); err == nil {
 		t.Error("ParseEngine(oracle) should fail")
+	}
+}
+
+func TestConnectHint(t *testing.T) {
+	tests := []struct {
+		name string
+		err  string
+		want string
+	}{
+		{
+			// The one that cost a release: an Android app without the INTERNET
+			// permission cannot open a socket, and the raw driver error blames
+			// the host.
+			name: "socket refused by the OS",
+			err:  "dial tcp 10.0.0.1:1433: socket: operation not permitted",
+			want: "missing network permission",
+		},
+		{"timeout", "dial tcp 10.0.0.1:1433: i/o timeout", "reachable from this network"},
+		{"refused", "dial tcp 10.0.0.1:1433: connection refused", "nothing is listening"},
+		{"bad host", "dial tcp: lookup nope: no such host", "did not resolve"},
+		{"bad credentials", "mssql: Login failed for user 'sa'", "credentials problem"},
+		{"nothing useful to add", "some unrecognised driver failure", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := connectHint(errors.New(tc.err))
+			if tc.want == "" {
+				if got != "" {
+					t.Errorf("expected no hint, got %q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("hint %q does not mention %q", got, tc.want)
+			}
+		})
 	}
 }

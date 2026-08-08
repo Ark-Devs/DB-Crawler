@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -83,7 +84,8 @@ func (m *Manager) Open(ctx context.Context, cfg Config) (*Session, error) {
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("connect to %s: %w", describeTarget(cfg), err)
+		return nil, fmt.Errorf("connect to %s: %w%s",
+			describeTarget(cfg), err, connectHint(err))
 	}
 
 	s := &Session{
@@ -105,6 +107,35 @@ func describeTarget(cfg Config) string {
 		return cfg.File
 	}
 	return cfg.hostPort()
+}
+
+// connectHint explains the failures whose driver message points somewhere
+// misleading. An empty string when there is nothing useful to add.
+func connectHint(err error) string {
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "operation not permitted"),
+		strings.Contains(msg, "permission denied"):
+		// Android refuses socket() with EPERM when the app lacks the INTERNET
+		// permission. It reads exactly like a firewall or a wrong password,
+		// and is neither — nothing ever left the device.
+		return "\n\nThe device refused to open the socket at all, which usually means" +
+			" the app is missing network permission rather than anything being wrong" +
+			" with the host or your credentials."
+	case strings.Contains(msg, "i/o timeout"),
+		strings.Contains(msg, "deadline exceeded"):
+		return "\n\nNo reply from the host. Check it is reachable from this network" +
+			" and that the port is open to you."
+	case strings.Contains(msg, "connection refused"):
+		return "\n\nThe host answered but nothing is listening on that port." +
+			" Check the port, and that the server accepts TCP connections."
+	case strings.Contains(msg, "no such host"):
+		return "\n\nThe hostname did not resolve. Check the spelling, or use an IP address."
+	case strings.Contains(msg, "login failed"),
+		strings.Contains(msg, "password authentication failed"):
+		return "\n\nThe server was reached — this is a credentials problem, not a network one."
+	}
+	return ""
 }
 
 // Get looks up an open session.
