@@ -64,9 +64,11 @@ android {
             // with a real signing config before shipping anywhere.
             signingConfig = signingConfigs.getByName("debug")
 
-            // The Go core is already stripped by the linker and holds no Dart
-            // code, so shrinking is left to the Flutter toolchain.
-            isMinifyEnabled = false
+            // Shrinking is left entirely to Flutter's Gradle plugin. Setting
+            // isMinifyEnabled = false here looked harmless and was not: the
+            // plugin turns resource shrinking on for release, and Gradle
+            // refuses that combination outright with "Removing unused
+            // resources requires unused code shrinking to be turned on".
         }
     }
 }
