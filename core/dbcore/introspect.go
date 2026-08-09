@@ -92,6 +92,42 @@ func (s *Session) Databases(ctx context.Context) ([]string, error) {
 	return nil, fmt.Errorf("unsupported engine %q", s.Engine)
 }
 
+// CurrentDatabase reports which database this session is actually in.
+//
+// The profile is allowed to leave the database blank, in which case the server
+// picks one — master on SQL Server, or whatever the login's default is. The
+// editor header has to name the database a statement will run against, and
+// "blank" is not something a user can act on.
+func (s *Session) CurrentDatabase(ctx context.Context) (string, error) {
+	var query string
+	switch s.Engine {
+	case SQLServer:
+		query = `SELECT DB_NAME()`
+	case PostgreSQL:
+		query = `SELECT current_database()`
+	case MySQL:
+		query = `SELECT DATABASE()`
+	case SQLite:
+		// One file, and its name is already known without asking the engine.
+		if strings.TrimSpace(s.Config.Database) != "" {
+			return s.Config.Database, nil
+		}
+		return "main", nil
+	default:
+		return "", fmt.Errorf("unsupported engine %q", s.Engine)
+	}
+	names, err := s.queryStrings(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	if len(names) == 0 {
+		// MySQL returns NULL when no schema has been selected, which
+		// queryStrings drops. Nothing is wrong; there is simply no answer.
+		return "", nil
+	}
+	return names[0], nil
+}
+
 // Schemas lists the schemas inside the current database. Engines without a
 // schema layer return nothing, and the explorer skips the level entirely.
 func (s *Session) Schemas(ctx context.Context) ([]string, error) {

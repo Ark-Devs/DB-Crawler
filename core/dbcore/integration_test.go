@@ -425,6 +425,37 @@ func TestClosedSessionIsReported(t *testing.T) {
 	}
 }
 
+// The editor header names the database every statement will run against, so
+// an empty or wrong answer here is somebody running a query somewhere they did
+// not mean to. On SQLite that name is the attached database, which is also
+// what the picker lists — so the two have to agree.
+func TestCurrentDatabaseNamesSomething(t *testing.T) {
+	_, s := newTestDB(t)
+	ctx := context.Background()
+
+	current, err := s.CurrentDatabase(ctx)
+	if err != nil {
+		t.Fatalf("current database: %v", err)
+	}
+	if current == "" {
+		t.Fatal("current database is empty; the header would have nothing to show")
+	}
+
+	names, err := s.Databases(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed bool
+	for _, name := range names {
+		if name == current {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Errorf("current %q is not among databases %v", current, names)
+	}
+}
+
 // --- protocol-level tests -------------------------------------------------
 
 func handle(t *testing.T, m *Manager, req map[string]any) Response {
@@ -485,6 +516,25 @@ func TestProtocolRoundTrip(t *testing.T) {
 	last := payload.Results[2]
 	if len(last.Rows) != 1 || deref(last.Rows[0][1]) != "one" {
 		t.Errorf("final SELECT returned %+v", last.Rows)
+	}
+}
+
+func TestProtocolDatabasesReportsCurrent(t *testing.T) {
+	m, s := newTestDB(t)
+
+	resp := handle(t, m, map[string]any{"op": "databases", "sessionId": s.ID})
+	if !resp.OK {
+		t.Fatalf("databases failed: %+v", resp.Error)
+	}
+	var payload struct {
+		Databases []string `json:"databases"`
+		Current   string   `json:"current"`
+	}
+	if err := json.Unmarshal(resp.Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Current == "" {
+		t.Errorf("no current database in %s", resp.Data)
 	}
 }
 

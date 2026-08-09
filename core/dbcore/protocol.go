@@ -231,7 +231,14 @@ func (m *Manager) dispatch(ctx context.Context, req Request) (resp Response) {
 			if err != nil {
 				return failFromError(err, CodeQuery)
 			}
-			return ok(map[string]any{"databases": names})
+			// Which database we are in is a separate question from which ones
+			// exist, and a login that cannot enumerate the server can still
+			// answer it — so a failure here is not a failure of the call.
+			current, err := s.CurrentDatabase(ctx)
+			if err != nil {
+				current = ""
+			}
+			return ok(map[string]any{"databases": names, "current": current})
 		})
 
 	case "schemas":

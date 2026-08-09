@@ -8,7 +8,21 @@ import 'history_view.dart';
 import 'table_detail_screen.dart';
 import 'theme.dart';
 
+/// Which of the three panes is in front.
+class _Pane {
+  static const explorer = 0;
+  static const editor = 1;
+  static const history = 2;
+}
+
 /// The workspace: explorer, editor, and history, once a connection is open.
+///
+/// There is no app bar and no tab bar. Both were permanent, and on a phone in
+/// landscape they cost about a quarter of the screen before the keyboard took
+/// its half — which left the editor roughly one line to type into. Navigation
+/// lives in a drawer, where it costs nothing until it is asked for, and the
+/// only thing kept on screen is the name of the database a statement will run
+/// against.
 class WorkspaceScreen extends StatefulWidget {
   const WorkspaceScreen({super.key});
 
@@ -16,15 +30,9 @@ class WorkspaceScreen extends StatefulWidget {
   State<WorkspaceScreen> createState() => _WorkspaceScreenState();
 }
 
-class _WorkspaceScreenState extends State<WorkspaceScreen>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 3, vsync: this);
-
-  @override
-  void dispose() {
-    _tabs.dispose();
-    super.dispose();
-  }
+class _WorkspaceScreenState extends State<WorkspaceScreen> {
+  final _scaffold = GlobalKey<ScaffoldState>();
+  int _pane = _Pane.editor;
 
   /// Moves to the editor with a statement loaded, which is how the explorer
   /// hands a table over to be queried.
@@ -40,7 +48,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
       state.setSql(sql);
       EditorView.loadSql(sql);
     }
-    _tabs.animateTo(1);
+    setState(() => _pane = _Pane.editor);
+  }
+
+  void _show(int pane) {
+    // The panes stay mounted, so the editor could otherwise keep focus — and
+    // its header, folded away for typing, would never come back.
+    FocusManager.instance.primaryFocus?.unfocus();
+    Navigator.of(context).pop(); // the drawer
+    if (pane != _pane) setState(() => _pane = pane);
+  }
+
+  Future<void> _disconnect() async {
+    final navigator = Navigator.of(context);
+    navigator.pop(); // the drawer
+    await context.read<AppState>().disconnect();
+    navigator.pop(); // the workspace
   }
 
   @override
@@ -48,98 +71,371 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
     final state = context.watch<AppState>();
     final connection = state.active;
 
-    // The session can be dropped from under us — the OS suspended the app long
-    // enough for the socket to die. Showing the workspace over a dead
-    // connection would fail every tap, so the screen steps back instead.
+    // Switching database reconnects, so there is a moment with no session.
+    // Showing "disconnected" for that moment would look like a failure.
     if (connection == null) {
-      return const _Disconnected();
+      return state.connecting ? const _Switching() : const _Disconnected();
     }
 
-    final tag = connection.profile.colorTag;
-    // Landscape is short. The subtitle and the full-height app bar cost two
-    // lines of the little vertical space there is, and the connection name
-    // alone still says which database you are about to run against.
-    final compact =
-        MediaQuery.orientationOf(context) == Orientation.landscape;
-
     return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: compact ? 44 : null,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                if (tag != null) ...[
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration:
-                        BoxDecoration(color: Color(tag), shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 8),
-                ],
-                Flexible(
-                  child: Text(
-                    connection.profile.name,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 16),
-                  ),
-                ),
-                if (connection.profile.readOnly) ...[
-                  const SizedBox(width: 8),
-                  const Icon(Icons.lock_outline, size: 14),
-                ],
-              ],
-            ),
-            if (!compact)
-              Text(
-                connection.profile.subtitle,
-                style: monoFont.copyWith(fontSize: 11),
-                overflow: TextOverflow.ellipsis,
-              ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Disconnect',
-            icon: const Icon(Icons.power_settings_new),
-            onPressed: () async {
-              final navigator = Navigator.of(context);
-              await context.read<AppState>().disconnect();
-              navigator.pop();
-            },
-          ),
-        ],
-        bottom: TabBar(
-          controller: _tabs,
-          tabs: compact
-              ? const [
-                  Tab(height: 40, icon: Icon(Icons.account_tree_outlined)),
-                  Tab(height: 40, icon: Icon(Icons.terminal)),
-                  Tab(height: 40, icon: Icon(Icons.history)),
-                ]
-              : const [
-                  Tab(icon: Icon(Icons.account_tree_outlined), text: 'Explorer'),
-                  Tab(icon: Icon(Icons.terminal), text: 'Editor'),
-                  Tab(icon: Icon(Icons.history), text: 'History'),
-                ],
-        ),
+      key: _scaffold,
+      drawer: _NavDrawer(
+        connection: connection,
+        pane: _pane,
+        onShow: _show,
+        onDisconnect: _disconnect,
       ),
       // Landscape puts the notch and the gesture bar down the sides, where
       // they would otherwise clip the first column of a results grid.
       body: SafeArea(
         left: true,
         right: true,
-        top: false,
+        top: true,
         bottom: false,
-        child: TabBarView(
-          controller: _tabs,
+        child: Column(
           children: [
-            _ExplorerView(onOpenInEditor: _openInEditor),
-            EditorView(onRequestTab: () => _tabs.animateTo(1)),
-            HistoryView(onUse: _openInEditor),
+            // Folded away while the editor has focus. Every pixel of the
+            // remaining height belongs to the text you are typing.
+            ValueListenableBuilder<bool>(
+              valueListenable: EditorView.typing,
+              builder: (context, typing, header) =>
+                  typing ? const SizedBox.shrink() : header!,
+              child: _Header(
+                connection: connection,
+                pane: _pane,
+                onMenu: () => _scaffold.currentState?.openDrawer(),
+              ),
+            ),
+            Expanded(
+              child: IndexedStack(
+                index: _pane,
+                children: [
+                  _ExplorerView(onOpenInEditor: _openInEditor),
+                  const EditorView(),
+                  HistoryView(onUse: _openInEditor),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The one strip of chrome the workspace keeps: a way into the drawer, the
+/// database in use, and whatever single action the visible pane needs.
+class _Header extends StatelessWidget {
+  const _Header({
+    required this.connection,
+    required this.pane,
+    required this.onMenu,
+  });
+
+  final ActiveConnection connection;
+  final int pane;
+  final VoidCallback onMenu;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surfaceContainer,
+      child: SizedBox(
+        height: 46,
+        child: Row(
+          children: [
+            IconButton(
+              tooltip: 'Menu',
+              icon: const Icon(Icons.menu, size: 22),
+              onPressed: onMenu,
+            ),
+            Expanded(child: _DatabaseButton(connection: connection)),
+            if (pane == _Pane.editor)
+              IconButton(
+                tooltip: 'New query tab',
+                icon: const Icon(Icons.add, size: 22),
+                onPressed: () => context.read<AppState>().openTab(),
+              ),
+            if (pane == _Pane.explorer)
+              IconButton(
+                tooltip: 'Refresh',
+                icon: const Icon(Icons.refresh, size: 22),
+                onPressed: () => context.read<AppState>().refreshTables(),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The database in use, and — when the login can see more than one — the way
+/// to move to another.
+///
+/// This is the header's whole job. Which server, which login, and which
+/// profile are all questions the drawer answers; the one thing that has to be
+/// visible without asking is where the next statement lands.
+class _DatabaseButton extends StatelessWidget {
+  const _DatabaseButton({required this.connection});
+
+  final ActiveConnection connection;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final tag = connection.profile.colorTag;
+    final current = _currentName(connection);
+    final names = connection.databases;
+
+    final label = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (tag != null) ...[
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: Color(tag), shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 8),
+        ],
+        Flexible(
+          child: Text(
+            current,
+            overflow: TextOverflow.ellipsis,
+            style: monoFont.copyWith(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        if (connection.profile.readOnly) ...[
+          const SizedBox(width: 6),
+          const Icon(Icons.lock_outline, size: 13),
+        ],
+        if (names.length > 1)
+          Icon(Icons.arrow_drop_down,
+              size: 20, color: theme.colorScheme.onSurfaceVariant),
+      ],
+    );
+
+    if (names.length <= 1) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: Padding(padding: const EdgeInsets.only(right: 8), child: label),
+      );
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: PopupMenuButton<String>(
+        tooltip: 'Switch database',
+        position: PopupMenuPosition.under,
+        padding: EdgeInsets.zero,
+        itemBuilder: (context) => [
+          for (final name in names)
+            PopupMenuItem<String>(
+              value: name,
+              height: 42,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 24,
+                    child: name == current
+                        ? const Icon(Icons.check, size: 16)
+                        : null,
+                  ),
+                  Expanded(
+                    child: Text(
+                      name,
+                      overflow: TextOverflow.ellipsis,
+                      style: monoFont.copyWith(fontSize: 13.5),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+        onSelected: (value) async {
+          final messenger = ScaffoldMessenger.of(context);
+          final state = context.read<AppState>();
+          // Switching reconnects, so it can fail the way any connect can —
+          // most often because the login has no access to what was picked.
+          if (!await state.switchDatabase(value)) {
+            messenger.showSnackBar(SnackBar(
+              content: Text(state.connectionError),
+              behavior: SnackBarBehavior.floating,
+            ));
+          }
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: label,
+        ),
+      ),
+    );
+  }
+
+  /// What to call the database we are in.
+  ///
+  /// The server's own answer first; the profile only as a fallback for the
+  /// moment before the first round trip comes back.
+  static String _currentName(ActiveConnection connection) {
+    if (connection.currentDatabase.isNotEmpty) return connection.currentDatabase;
+    if (connection.profile.database.isNotEmpty) {
+      return connection.profile.database;
+    }
+    return connection.profile.name;
+  }
+}
+
+class _NavDrawer extends StatelessWidget {
+  const _NavDrawer({
+    required this.connection,
+    required this.pane,
+    required this.onShow,
+    required this.onDisconnect,
+  });
+
+  final ActiveConnection connection;
+  final int pane;
+  final void Function(int pane) onShow;
+  final Future<void> Function() onDisconnect;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final tag = connection.profile.colorTag;
+
+    return Drawer(
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 22, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      if (tag != null) ...[
+                        Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                              color: Color(tag), shape: BoxShape.circle),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      Expanded(
+                        child: Text(
+                          connection.profile.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    connection.profile.subtitle,
+                    style: monoFont.copyWith(
+                      fontSize: 11,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (connection.profile.readOnly) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const Icon(Icons.lock_outline, size: 14),
+                        const SizedBox(width: 6),
+                        Text('Read-only',
+                            style: theme.textTheme.labelMedium),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            _NavTile(
+              icon: Icons.account_tree_outlined,
+              label: 'Explorer',
+              selected: pane == _Pane.explorer,
+              onTap: () => onShow(_Pane.explorer),
+            ),
+            _NavTile(
+              icon: Icons.terminal,
+              label: 'Editor',
+              selected: pane == _Pane.editor,
+              onTap: () => onShow(_Pane.editor),
+            ),
+            _NavTile(
+              icon: Icons.history,
+              label: 'History',
+              selected: pane == _Pane.history,
+              onTap: () => onShow(_Pane.history),
+            ),
+            const Spacer(),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.power_settings_new),
+              title: const Text('Disconnect'),
+              onTap: onDisconnect,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NavTile extends StatelessWidget {
+  const _NavTile({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListTile(
+      selected: selected,
+      selectedTileColor: theme.colorScheme.secondaryContainer,
+      selectedColor: theme.colorScheme.onSecondaryContainer,
+      leading: Icon(icon),
+      title: Text(label),
+      onTap: onTap,
+    );
+  }
+}
+
+class _Switching extends StatelessWidget {
+  const _Switching();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            SizedBox(height: 14),
+            Text('Reconnecting…'),
           ],
         ),
       ),
@@ -218,36 +514,8 @@ class _ExplorerViewState extends State<_ExplorerView> {
 
     return Column(
       children: [
-        if (connection.databases.length > 1)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-            child: DropdownButtonFormField<String>(
-              initialValue: connection.databases
-                      .contains(connection.profile.database)
-                  ? connection.profile.database
-                  : null,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Database'),
-              items: [
-                for (final name in connection.databases)
-                  DropdownMenuItem(value: name, child: Text(name)),
-              ],
-              onChanged: (value) async {
-                if (value == null) return;
-                final messenger = ScaffoldMessenger.of(context);
-                final state = context.read<AppState>();
-                // Switching reconnects, so it can fail the way any connect
-                // can — most often because the login has no access to the
-                // database that was picked.
-                if (!await state.switchDatabase(value)) {
-                  messenger.showSnackBar(SnackBar(
-                    content: Text(state.connectionError),
-                    behavior: SnackBarBehavior.floating,
-                  ));
-                }
-              },
-            ),
-          ),
+        // The database picker lives in the header now — it is the one piece of
+        // context that matters on every pane, not just this one.
         if (connection.engine.usesSchemas && connection.schemas.isNotEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
@@ -288,9 +556,10 @@ class _ExplorerViewState extends State<_ExplorerView> {
             ),
           ),
         Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
           child: TextField(
             decoration: InputDecoration(
+              isDense: true,
               prefixIcon: const Icon(Icons.search),
               hintText: 'Filter ${tables.length} of ${connection.tables.length}',
               suffixIcon: _filter.isEmpty

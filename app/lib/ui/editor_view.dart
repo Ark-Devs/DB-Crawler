@@ -8,11 +8,113 @@ import '../state/app_state.dart';
 import 'results_grid.dart';
 import 'theme.dart';
 
+// The fixed pieces of the editor column. They are named rather than inlined
+// because the layout has to subtract exactly what it is about to draw — a
+// constant that disagrees with the widget is how a Column overflows.
+const _tabStripHeight = 42.0;
+const _suggestionHeight = 42.0;
+const _toolbarHeight = 52.0;
+const _toolbarCompactHeight = 44.0;
+
+/// How the editor column divides the height it was handed.
+///
+/// This lives outside the widget so it can be checked without a device.
+/// Getting it wrong has shipped twice now — once as a Column that overflowed
+/// off the bottom of a landscape screen, and once as a text field squeezed to
+/// a few pixels by a keyboard — and both times the mistake was plain in the
+/// numbers alone, well before anything was rendered.
+@immutable
+class EditorLayout {
+  const EditorLayout._({
+    required this.compact,
+    required this.showSuggestions,
+    required this.editorHeight,
+    required this.resultsHeight,
+  });
+
+  /// Roughly six lines of the mono face plus its padding. Below this the
+  /// editor stops being something anyone can write a query in, so it is a
+  /// floor and not a target — the share below may exceed it, never undercut
+  /// it while there is height to spare.
+  static const minEditorHeight = 132.0;
+
+  /// True when the box is short enough that the tab strip and a full-size
+  /// toolbar are worth more as editor space than as controls.
+  ///
+  /// The smallest box this can lay out without overflowing is a compact
+  /// toolbar and its divider. Below that there is no arrangement to pick, and
+  /// no device that asks for one.
+  static const minLayoutHeight = _toolbarCompactHeight + 1;
+
+  final bool compact;
+
+  /// False when there are suggestions but nowhere to put them without taking
+  /// the editor below a couple of lines. A completion strip that costs you
+  /// sight of what you are completing is not help.
+  final bool showSuggestions;
+
+  final double editorHeight;
+  final double resultsHeight;
+
+  bool get showTabStrip => !compact;
+
+  /// Below about a line and a half the results pane shows nothing but a
+  /// clipped header, so it is dropped rather than teased.
+  bool get showResults => resultsHeight >= 48;
+
+  factory EditorLayout.forHeight({
+    required double height,
+    required bool typing,
+    required bool hasSuggestions,
+  }) {
+    // Two lines of text is the least worth showing a completion strip over.
+    const leastUsefulEditor = 60.0;
+    final showSuggestions = hasSuggestions &&
+        height - minLayoutHeight - _suggestionHeight >= leastUsefulEditor;
+
+    final suggestions = showSuggestions ? _suggestionHeight : 0.0;
+    final roomy = _tabStripHeight + suggestions + _toolbarHeight + 1;
+
+    // Compact is decided by what is left, not by whether the keyboard is up.
+    // Keying it on typing meant a short landscape pane still laid out 95
+    // points of chrome inside a 60-point box, and a Column that does not fit
+    // has nothing to give — it just runs off the bottom.
+    final compact = height - roomy < minEditorHeight;
+    final chrome = compact ? suggestions + _toolbarCompactHeight + 1 : roomy;
+    final free = (height - chrome).clamp(0.0, double.infinity);
+
+    // A share of what is left, with a floor under it. The floor is what was
+    // missing before: 42% of a keyboard-sized remainder is a text field too
+    // short to show the line being typed. The share rises while the keyboard
+    // is up too — results you cannot see are worth less than room to write
+    // the query that produces them.
+    final floor = free < minEditorHeight ? free : minEditorHeight;
+    final share =
+        (free * (typing ? 0.62 : 0.42)).clamp(0.0, typing ? 340.0 : 260.0);
+    final editor = share < floor ? floor : share;
+
+    return EditorLayout._(
+      compact: compact,
+      showSuggestions: showSuggestions,
+      editorHeight: editor,
+      resultsHeight: free - editor,
+    );
+  }
+}
+
 /// The SQL editor and its results.
 class EditorView extends StatefulWidget {
-  const EditorView({super.key, this.onRequestTab});
+  const EditorView({super.key});
 
-  final VoidCallback? onRequestTab;
+  /// True while the text field has focus, which is as near as Flutter gets to
+  /// "the keyboard is up" without asking the platform.
+  ///
+  /// The workspace watches it to fold its header away. On a phone in landscape
+  /// the header, the tab strip, the toolbar and the keyboard together left the
+  /// text field about one line — the editor was on screen and impossible to
+  /// type into. Anything that is not the text being edited gives way while it
+  /// is being edited.
+  static final ValueNotifier<bool> typing = ValueNotifier<bool>(false);
 
   /// Loads SQL into the editor from elsewhere in the app.
   ///
@@ -54,6 +156,7 @@ class _EditorViewState extends State<EditorView> {
     // The run button and the suggestion bar both depend on where the cursor
     // is, and moving the caret fires no onChanged.
     _controller.addListener(_onEditorChanged);
+    _focus.addListener(_onFocusChanged);
     EditorView._loader = (sql) {
       _controller.text = sql;
       _controller.selection =
@@ -79,6 +182,11 @@ class _EditorViewState extends State<EditorView> {
       selection: TextSelection.collapsed(offset: state.tab.sql.length),
     );
     _suggestions = const [];
+  }
+
+  void _onFocusChanged() {
+    EditorView.typing.value = _focus.hasFocus;
+    if (mounted) setState(() {});
   }
 
   /// Recomputes suggestions a beat after typing stops.
@@ -131,6 +239,10 @@ class _EditorViewState extends State<EditorView> {
     EditorView._loader = null;
     _completionDebounce?.cancel();
     _controller.removeListener(_onEditorChanged);
+    // Detached before the node is disposed: disposing unfocuses, and a
+    // listener firing then would rebuild an ancestor mid-teardown.
+    _focus.removeListener(_onFocusChanged);
+    EditorView.typing.value = false;
     _controller.dispose();
     _focus.dispose();
     super.dispose();
@@ -145,12 +257,24 @@ class _EditorViewState extends State<EditorView> {
     // Fixed heights plus a minimum-height editor overflowed the moment the
     // keyboard opened in landscape, and an overflowing Column has nothing to
     // shrink and no scrollbar — the content simply went off the bottom.
+    //
+    // The opposite mistake is just as easy: a purely proportional share has no
+    // floor under it, so a keyboard that takes most of the screen leaves the
+    // editor a few pixels tall. Everything here has both a share and a floor.
     return LayoutBuilder(
       builder: (context, constraints) {
         final height = constraints.maxHeight;
         final width = constraints.maxWidth;
 
+        final typing = _focus.hasFocus;
+        final layout = EditorLayout.forHeight(
+          height: height,
+          typing: typing,
+          hasSuggestions: _suggestions.isNotEmpty,
+        );
+
         final toolbar = _Toolbar(
+          compact: layout.compact,
           canRun: _controller.text.trim().isNotEmpty && !state.running,
           running: state.running,
           hasSelection: _hasSelection,
@@ -171,12 +295,12 @@ class _EditorViewState extends State<EditorView> {
           },
         );
 
-        final suggestionBar = _suggestions.isEmpty
-            ? null
-            : _SuggestionBar(
+        final suggestionBar = layout.showSuggestions
+            ? _SuggestionBar(
                 suggestions: _suggestions,
                 onPick: _applySuggestion,
-              );
+              )
+            : null;
 
         final results = state.running
             ? const _RunningIndicator()
@@ -194,11 +318,17 @@ class _EditorViewState extends State<EditorView> {
                 width: (width * 0.46).clamp(260.0, width - 200),
                 child: Column(
                   children: [
-                    _TabStrip(state: state),
+                    if (layout.showTabStrip)
+                      SizedBox(
+                          height: _tabStripHeight,
+                          child: _TabStrip(state: state)),
+                    // Expanded, so whatever the keyboard leaves goes here
+                    // rather than to a pane nobody is reading.
                     Expanded(
                       child: _EditorField(
                         controller: _controller,
                         focus: _focus,
+                        compact: layout.compact,
                         onChanged: state.setSql,
                       ),
                     ),
@@ -213,40 +343,24 @@ class _EditorViewState extends State<EditorView> {
           );
         }
 
-        const tabStripHeight = 42.0;
-        const suggestionHeight = 42.0;
-        const toolbarHeight = 52.0;
-        final chrome = tabStripHeight +
-            (suggestionBar == null ? 0.0 : suggestionHeight) +
-            toolbarHeight +
-            1;
-        final free = (height - chrome).clamp(0.0, double.infinity);
-
-        // The editor takes a share of what is left, but never more than there
-        // is. When the keyboard has taken nearly everything, the results pane
-        // shrinks away rather than pushing the editor off screen — you cannot
-        // read results while typing anyway.
-        final editorHeight = (free * 0.42).clamp(0.0, 260.0).clamp(0.0, free);
-        final resultsHeight = free - editorHeight;
-
         return Column(
           children: [
-            SizedBox(height: tabStripHeight, child: _TabStrip(state: state)),
+            if (layout.showTabStrip)
+              SizedBox(height: _tabStripHeight, child: _TabStrip(state: state)),
             SizedBox(
-              height: editorHeight,
+              height: layout.editorHeight,
               child: _EditorField(
                 controller: _controller,
                 focus: _focus,
+                compact: layout.compact,
                 onChanged: state.setSql,
               ),
             ),
             if (suggestionBar != null) suggestionBar,
             toolbar,
             const Divider(height: 1),
-            // Below about a line and a half the results pane shows nothing but
-            // a clipped header, so it is dropped rather than teased.
-            if (resultsHeight >= 48)
-              SizedBox(height: resultsHeight, child: results),
+            if (layout.showResults)
+              SizedBox(height: layout.resultsHeight, child: results),
           ],
         );
       },
@@ -284,11 +398,17 @@ class _EditorField extends StatelessWidget {
   const _EditorField({
     required this.controller,
     required this.focus,
+    required this.compact,
     required this.onChanged,
   });
 
   final TextEditingController controller;
   final FocusNode focus;
+
+  /// Trims the padding when the box is short. Twelve points top and bottom is
+  /// most of a line of text, and a line of text is what is scarce here.
+  final bool compact;
+
   final ValueChanged<String> onChanged;
 
   @override
@@ -316,9 +436,12 @@ class _EditorField extends StatelessWidget {
           smartDashesType: SmartDashesType.disabled,
           textCapitalization: TextCapitalization.none,
           style: monoFont.copyWith(fontSize: 14, height: 1.4),
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             border: InputBorder.none,
-            contentPadding: EdgeInsets.all(12),
+            contentPadding: EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: compact ? 6 : 12,
+            ),
             hintText: 'SELECT * FROM …',
           ),
           onChanged: onChanged,
@@ -330,6 +453,7 @@ class _EditorField extends StatelessWidget {
 
 class _Toolbar extends StatelessWidget {
   const _Toolbar({
+    required this.compact,
     required this.canRun,
     required this.running,
     required this.hasSelection,
@@ -337,6 +461,11 @@ class _Toolbar extends StatelessWidget {
     required this.onCancel,
     required this.onFormat,
   });
+
+  /// Squeezes the run button down while the keyboard is up. The toolbar is the
+  /// only thing that has to stay reachable then, not the only thing that
+  /// matters.
+  final bool compact;
 
   final bool canRun;
   final bool running;
@@ -349,37 +478,45 @@ class _Toolbar extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final tag = state.active?.profile.colorTag;
+    final density =
+        compact ? VisualDensity.compact : VisualDensity.standard;
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
-      child: Row(
-        children: [
-          if (running)
-            OutlinedButton.icon(
-              onPressed: onCancel,
-              icon: const Icon(Icons.stop, size: 18),
-              label: const Text('Stop'),
-            )
-          else
-            FilledButton.icon(
-              onPressed: canRun ? onRun : null,
-              icon: const Icon(Icons.play_arrow, size: 18),
-              label: Text(hasSelection ? 'Run selection' : 'Run'),
-              style: tag == null
-                  ? null
+    return SizedBox(
+      height: compact ? _toolbarCompactHeight : _toolbarHeight,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(8, compact ? 2 : 6, 8, compact ? 2 : 6),
+        child: Row(
+          children: [
+            if (running)
+              OutlinedButton.icon(
+                onPressed: onCancel,
+                icon: const Icon(Icons.stop, size: 18),
+                label: const Text('Stop'),
+                style: OutlinedButton.styleFrom(visualDensity: density),
+              )
+            else
+              FilledButton.icon(
+                onPressed: canRun ? onRun : null,
+                icon: const Icon(Icons.play_arrow, size: 18),
+                label: Text(hasSelection ? 'Run selection' : 'Run'),
+                style: FilledButton.styleFrom(
+                  visualDensity: density,
                   // Tinting the run button with the connection's colour is the
                   // last thing a user sees before a statement executes, which
                   // makes it the right place to say "this is production".
-                  : FilledButton.styleFrom(backgroundColor: Color(tag)),
+                  backgroundColor: tag == null ? null : Color(tag),
+                ),
+              ),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: 'Tidy up',
+              visualDensity: density,
+              icon: const Icon(Icons.format_align_left, size: 20),
+              onPressed: onFormat,
             ),
-          const SizedBox(width: 8),
-          IconButton(
-            tooltip: 'Tidy up',
-            icon: const Icon(Icons.format_align_left, size: 20),
-            onPressed: onFormat,
-          ),
-          const Spacer(),
-        ],
+            const Spacer(),
+          ],
+        ),
       ),
     );
   }

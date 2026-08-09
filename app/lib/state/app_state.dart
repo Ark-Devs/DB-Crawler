@@ -19,6 +19,14 @@ class ActiveConnection {
   final ConnectionProfile profile;
 
   List<String> databases = const [];
+
+  /// The database the server actually put us in.
+  ///
+  /// Not the same thing as `profile.database`, which is blank whenever the
+  /// user connected without picking one. The editor header names the database
+  /// a statement is about to run against, and "blank" is not a name.
+  String currentDatabase = '';
+
   List<String> schemas = const [];
   String? selectedSchema;
   List<TableInfo> tables = const [];
@@ -290,7 +298,10 @@ class AppState extends ChangeNotifier {
   Future<bool> switchDatabase(String name) async {
     final connection = _active;
     if (connection == null) return false;
-    if (connection.profile.database == name) return true;
+    // Compared against where we actually are, not against the profile: a
+    // profile with no database set is already in master, and reconnecting to
+    // "master" would throw away the session for nothing.
+    if (connection.currentDatabase == name) return true;
     return connect(connection.profile.copyWith(database: name));
   }
 
@@ -305,6 +316,7 @@ class AppState extends ChangeNotifier {
       connection.databases = ((data['databases'] as List<dynamic>?) ?? const [])
           .map((d) => '$d')
           .toList();
+      connection.currentDatabase = data['current'] as String? ?? '';
       notifyListeners();
     } on CoreException {
       // A login that cannot enumerate databases can still use the one it is

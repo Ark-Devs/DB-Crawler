@@ -16,7 +16,11 @@ on:
       tag:
         description: "Tag to build and release"
         required: true
-        default: v0.0.1-beta
+        default: v0.0.9-beta
+      highlights:
+        description: "What changed in this build (markdown; one bullet per line)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -204,6 +208,22 @@ jobs:
             echo 'text=**No IPA in this release** — the iOS build did not succeed. Check the `iOS IPA (unsigned)` job in the workflow run.' >> "$GITHUB_OUTPUT"
           fi
 
+      # The notes below are the same for every build; what changed is not.
+      # Eight releases went out saying "first beta" because this body was
+      # hardcoded, so the part that varies now comes from the dispatch input.
+      - name: What changed in this build
+        id: highlights
+        env:
+          HIGHLIGHTS: ${{ github.event.inputs.highlights }}
+        run: |
+          {
+            echo 'text<<HIGHLIGHTS_EOF'
+            if [ -n "$HIGHLIGHTS" ]; then
+              printf '## What changed\n\n%s\n' "$HIGHLIGHTS"
+            fi
+            echo 'HIGHLIGHTS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
@@ -211,8 +231,10 @@ jobs:
           prerelease: true
           files: release/*
           body: |
-            First beta of DB Crawler — a SQL client for phones, talking to
-            SQL Server / Azure SQL, PostgreSQL, MySQL / MariaDB, and SQLite.
+            DB Crawler — a SQL client for phones, talking to SQL Server /
+            Azure SQL, PostgreSQL, MySQL / MariaDB, and SQLite.
+
+            ${{ steps.highlights.outputs.text }}
 
             ## Android
 

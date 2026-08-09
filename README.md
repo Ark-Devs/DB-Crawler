@@ -57,13 +57,23 @@ tool/          cross-compiles the core for Android and iOS
 production does not look like staging. Test before saving. A read-only switch
 that refuses anything that is not a read.
 
-**Explorer.** Databases, schemas, tables and views, with row estimates. Tap a
-table for its columns, indexes, foreign keys, and a reconstructed `CREATE
-TABLE`. Tap a column to scaffold a `WHERE` clause.
+**Explorer.** Schemas, tables, views, functions and procedures, filtered by
+kind and by name, with row estimates. Tap a table to open `SELECT TOP 200` on
+it; tap its icon for columns, indexes, foreign keys, and a reconstructed
+`CREATE TABLE`. Tap a column to scaffold a `WHERE` clause.
 
-**Editor.** Multi-statement batches, a row cap you choose, and a stop button
-that actually cancels the query on the server. Autocorrect, smart quotes, and
-auto-capitalisation are all off — each one silently breaks SQL.
+**Editor.** Several query tabs, each holding its own results, so a slow query
+in one cannot overwrite what another is showing. Multi-statement batches, a
+stop button that actually cancels the query on the server, and context-aware
+completion for tables and columns. Select part of the buffer and only that
+part runs. Autocorrect, smart quotes, and auto-capitalisation are all off —
+each one silently breaks SQL.
+
+**One thing on screen at a time.** Navigation is a drawer, not a permanent tab
+bar: on a phone in landscape the chrome and the keyboard together left the
+editor about one line to type into. The only thing kept on screen is the name
+of the database the next statement will run against, and even that folds away
+while you are typing. Tap it to switch database.
 
 **Results.** A grid that scrolls both ways with a pinned header, lazy rows, and
 columns sized to their contents. Numbers right-aligned. `NULL` rendered
@@ -192,7 +202,12 @@ For SQL Server the database is optional, and leaving it empty is not the same
 as picking one: you land in whatever the login's default database is, usually
 `master`. The explorer will then show `master`'s tables and none of yours,
 which looks like the app is broken when it is doing exactly what it was told.
-Set it to the database you actually want.
+
+That is why the header names the database you are actually in, asked of the
+server rather than read back off the profile — it is the difference between
+"no tables" and "no tables *here*". Tap it to move to another database; the
+list is what your login can open, and switching reconnects rather than issuing
+`USE`, because PostgreSQL cannot change database on a live connection at all.
 
 ## Security
 
@@ -229,7 +244,10 @@ Working, and honest about what is not here yet:
 
 - Editing rows from the grid — the app queries and browses; it does not yet
   offer an in-place cell editor.
-- No syntax highlighting or completion in the editor.
+- No syntax highlighting. Completion is there, but it is name completion —
+  tables, columns, keywords — not a parser that understands your query.
+- Results are capped at 1000 rows. The grid says when a result was cut short,
+  but there is no paging to the next page.
 - The reconstructed DDL is a readable summary, not a runnable script. Storage
   clauses, computed columns, and check constraints are not in the metadata it
   is built from, and the table screen says so.
