@@ -95,6 +95,8 @@ class _HistoryViewState extends State<HistoryView> {
         ),
         Expanded(
           child: ListView.separated(
+            keyboardDismissBehavior:
+                ScrollViewKeyboardDismissBehavior.onDrag,
             itemCount: entries.length,
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, index) =>

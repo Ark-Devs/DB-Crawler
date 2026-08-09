@@ -22,7 +22,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'DbCrawlerCore'
-  s.version          = '0.0.7'
+  s.version          = '0.0.8'
   s.summary          = 'The Go database core behind DB Crawler.'
   s.description      = <<~DESC
     Connection handling, query execution, and schema introspection for

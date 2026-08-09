@@ -212,6 +212,7 @@ class _Body extends StatelessWidget {
     final theme = Theme.of(context);
 
     return ListView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.only(bottom: 32),
       children: [
         Padding(

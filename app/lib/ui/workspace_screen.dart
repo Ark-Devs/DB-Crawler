@@ -56,9 +56,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
     }
 
     final tag = connection.profile.colorTag;
+    // Landscape is short. The subtitle and the full-height app bar cost two
+    // lines of the little vertical space there is, and the connection name
+    // alone still says which database you are about to run against.
+    final compact =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
 
     return Scaffold(
       appBar: AppBar(
+        toolbarHeight: compact ? 44 : null,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -87,11 +93,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                 ],
               ],
             ),
-            Text(
-              connection.profile.subtitle,
-              style: monoFont.copyWith(fontSize: 11),
-              overflow: TextOverflow.ellipsis,
-            ),
+            if (!compact)
+              Text(
+                connection.profile.subtitle,
+                style: monoFont.copyWith(fontSize: 11),
+                overflow: TextOverflow.ellipsis,
+              ),
           ],
         ),
         actions: [
@@ -107,20 +114,34 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
         ],
         bottom: TabBar(
           controller: _tabs,
-          tabs: const [
-            Tab(icon: Icon(Icons.account_tree_outlined), text: 'Explorer'),
-            Tab(icon: Icon(Icons.terminal), text: 'Editor'),
-            Tab(icon: Icon(Icons.history), text: 'History'),
-          ],
+          tabs: compact
+              ? const [
+                  Tab(height: 40, icon: Icon(Icons.account_tree_outlined)),
+                  Tab(height: 40, icon: Icon(Icons.terminal)),
+                  Tab(height: 40, icon: Icon(Icons.history)),
+                ]
+              : const [
+                  Tab(icon: Icon(Icons.account_tree_outlined), text: 'Explorer'),
+                  Tab(icon: Icon(Icons.terminal), text: 'Editor'),
+                  Tab(icon: Icon(Icons.history), text: 'History'),
+                ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabs,
-        children: [
-          _ExplorerView(onOpenInEditor: _openInEditor),
-          EditorView(onRequestTab: () => _tabs.animateTo(1)),
-          HistoryView(onUse: _openInEditor),
-        ],
+      // Landscape puts the notch and the gesture bar down the sides, where
+      // they would otherwise clip the first column of a results grid.
+      body: SafeArea(
+        left: true,
+        right: true,
+        top: false,
+        bottom: false,
+        child: TabBarView(
+          controller: _tabs,
+          children: [
+            _ExplorerView(onOpenInEditor: _openInEditor),
+            EditorView(onRequestTab: () => _tabs.animateTo(1)),
+            HistoryView(onUse: _openInEditor),
+          ],
+        ),
       ),
     );
   }
@@ -334,6 +355,7 @@ class _ExplorerViewState extends State<_ExplorerView> {
     }
 
     return ListView.separated(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       itemCount: tables.length,
       separatorBuilder: (_, __) => const Divider(height: 1),
       itemBuilder: (context, index) {

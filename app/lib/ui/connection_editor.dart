@@ -89,6 +89,7 @@ class _ConnectionEditorState extends State<ConnectionEditor> {
       body: Form(
         key: _formKey,
         child: ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
           children: [
             _EngineSelector(

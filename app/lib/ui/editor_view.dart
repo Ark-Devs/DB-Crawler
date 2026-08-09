@@ -141,20 +141,16 @@ class _EditorViewState extends State<EditorView> {
     final state = context.watch<AppState>();
     _syncTab(state);
 
-    return Column(
-      children: [
-        _TabStrip(state: state),
-        _EditorField(
-          controller: _controller,
-          focus: _focus,
-          onChanged: state.setSql,
-        ),
-        if (_suggestions.isNotEmpty)
-          _SuggestionBar(
-            suggestions: _suggestions,
-            onPick: _applySuggestion,
-          ),
-        _Toolbar(
+    // Every height below is derived from the box we were actually given.
+    // Fixed heights plus a minimum-height editor overflowed the moment the
+    // keyboard opened in landscape, and an overflowing Column has nothing to
+    // shrink and no scrollbar — the content simply went off the bottom.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final height = constraints.maxHeight;
+        final width = constraints.maxWidth;
+
+        final toolbar = _Toolbar(
           canRun: _controller.text.trim().isNotEmpty && !state.running,
           running: state.running,
           hasSelection: _hasSelection,
@@ -173,17 +169,87 @@ class _EditorViewState extends State<EditorView> {
             state.setSql(formatted);
             setState(() {});
           },
-        ),
-        const Divider(height: 1),
-        Expanded(
-          child: state.running
-              ? const _RunningIndicator()
-              : ResultsPanel(
-                  results: state.results,
-                  error: state.runError,
+        );
+
+        final suggestionBar = _suggestions.isEmpty
+            ? null
+            : _SuggestionBar(
+                suggestions: _suggestions,
+                onPick: _applySuggestion,
+              );
+
+        final results = state.running
+            ? const _RunningIndicator()
+            : ResultsPanel(results: state.results, error: state.runError);
+
+        // Wider than tall means landscape, where the keyboard leaves a short,
+        // wide strip. Stacking the editor above the results in that shape
+        // leaves neither of them usable, so they sit side by side instead and
+        // each gets the full remaining height.
+        if (width > height) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                width: (width * 0.46).clamp(260.0, width - 200),
+                child: Column(
+                  children: [
+                    _TabStrip(state: state),
+                    Expanded(
+                      child: _EditorField(
+                        controller: _controller,
+                        focus: _focus,
+                        onChanged: state.setSql,
+                      ),
+                    ),
+                    if (suggestionBar != null) suggestionBar,
+                    toolbar,
+                  ],
                 ),
-        ),
-      ],
+              ),
+              const VerticalDivider(width: 1),
+              Expanded(child: results),
+            ],
+          );
+        }
+
+        const tabStripHeight = 42.0;
+        const suggestionHeight = 42.0;
+        const toolbarHeight = 52.0;
+        final chrome = tabStripHeight +
+            (suggestionBar == null ? 0.0 : suggestionHeight) +
+            toolbarHeight +
+            1;
+        final free = (height - chrome).clamp(0.0, double.infinity);
+
+        // The editor takes a share of what is left, but never more than there
+        // is. When the keyboard has taken nearly everything, the results pane
+        // shrinks away rather than pushing the editor off screen — you cannot
+        // read results while typing anyway.
+        final editorHeight = (free * 0.42).clamp(0.0, 260.0).clamp(0.0, free);
+        final resultsHeight = free - editorHeight;
+
+        return Column(
+          children: [
+            SizedBox(height: tabStripHeight, child: _TabStrip(state: state)),
+            SizedBox(
+              height: editorHeight,
+              child: _EditorField(
+                controller: _controller,
+                focus: _focus,
+                onChanged: state.setSql,
+              ),
+            ),
+            if (suggestionBar != null) suggestionBar,
+            toolbar,
+            const Divider(height: 1),
+            // Below about a line and a half the results pane shows nothing but
+            // a clipped header, so it is dropped rather than teased.
+            if (resultsHeight >= 48)
+              SizedBox(height: resultsHeight, child: results),
+          ],
+        );
+      },
     );
   }
 
@@ -227,15 +293,17 @@ class _EditorField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 120, maxHeight: 260),
+    // No constraints of its own: the parent has already measured what it can
+    // spare, and a minimum height here is exactly what overflowed before.
+    return SizedBox.expand(
       child: Container(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
         child: TextField(
           controller: controller,
           focusNode: focus,
           maxLines: null,
-          expands: false,
+          expands: true,
+          textAlignVertical: TextAlignVertical.top,
           keyboardType: TextInputType.multiline,
           textInputAction: TextInputAction.newline,
           // Every one of these would otherwise fight the user: autocorrect
