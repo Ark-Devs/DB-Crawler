@@ -1,7 +1,7 @@
 name: db_crawler
 description: A SQL client for phones — browse schemas and run queries against SQL Server, PostgreSQL, MySQL, and SQLite.
 publish_to: "none"
-version: 0.0.9+9
+version: 0.1.0+10
 
 environment:
   sdk: ^3.9.0
@@ -30,5 +30,39 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^5.0.0
 
+  # Generates the launcher icons for both platforms from one source image.
+  # Build-time only: it writes into android/ and ios/ and ships nothing.
+  flutter_launcher_icons: ^0.14.3
+
 flutter:
   uses-material-design: true
+
+# Regenerate with: dart run flutter_launcher_icons
+#
+# Check `git diff ios/Runner.xcodeproj/project.pbxproj` afterwards and revert
+# it: 0.14.4 writes ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS
+# = AppIcon, which is a boolean setting, and the appicon name it was reaching
+# for is already set correctly in the template.
+#
+# The source art is mark 7b, in ../assets/brand.
+#
+# Android crops the 108dp adaptive layer to whatever mask the launcher
+# applies, and a circular mask keeps only the middle 72dp. The spider sits in
+# the art's bottom-left corner, so at full bleed it is the first thing to go —
+# and it is the only colour in the design. The inset below pulls the whole
+# square in far enough that the corner lands inside the circle instead of
+# outside it. Verified against circle, squircle and square masks at 20%; at
+# the 16% default the spider still loses its legs to a circle.
+#
+# The background is the art's own ground colour, so the tile reaches the edge
+# under any mask. The cost is that the web strokes stop short of the corners
+# on a square mask — worth it to keep the only colour in the design.
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "../assets/brand/app-icon-1024.png"
+  adaptive_icon_background: "#0B0B0C"
+  adaptive_icon_foreground: "../assets/brand/app-icon-1024.png"
+  adaptive_icon_foreground_inset: 20
+  # iOS rejects an icon that carries an alpha channel outright.
+  remove_alpha_ios: true

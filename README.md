@@ -48,6 +48,7 @@ core/          Go: connections, queries, introspection, the JSON protocol
   ffi/         the three C symbols the app links against
   cmd/         a terminal harness that speaks the identical protocol
 app/           Flutter: the interface
+assets/brand/  the mark, as SVG — launcher icons are generated from it
 tool/          cross-compiles the core for Android and iOS
 ```
 
